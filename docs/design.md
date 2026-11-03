@@ -173,7 +173,7 @@ flowchart LR
 | 저장소 | 데이터 | 보관 |
 |---|---|---|
 | Kafka | 토픽 7개 (1.7절) | 7일 |
-| HDFS `/raw/{topic}/dt={yyyy-mm-dd}/` | 수집 원본 JSON | 영구 |
+| HDFS `/raw/topic={topic}/dt={yyyy-mm-dd}/` | 수집 원본 JSON (메시지 1건 = 1줄, `dt`는 수집일) | 영구 |
 | HDFS `/curated/{table}/season={code}/` | 정제 테이블(Parquet): match, set_score, team_match_stat, player_match_stat, rally_event | 영구 |
 | HDFS `/features/{name}/` | 모델 학습용 피처(Parquet): match_features, player_features | 영구 |
 | PostgreSQL `service` | 서빙 테이블과 데이터 마트 (2장 ERD) | 현재 + 과거 시즌 |
@@ -186,11 +186,11 @@ flowchart LR
 | 토픽 | 키 | 파티션 | 생산자 | 소비자 |
 |---|---|---|---|---|
 | `kovo.schedule` | 시즌 코드 | 1 | 배치 수집기 | raw-archiver |
-| `kovo.match` | 경기 번호 | 3 | 배치 수집기 | raw-archiver |
-| `kovo.rally` | 경기 번호 | 3 | 배치 수집기 | raw-archiver |
-| `kovo.live` | 경기 번호 | 3 | 실시간 수집기, 경기 재생기 | live-metrics, raw-archiver |
+| `kovo.match` | 시즌-경기 번호 (예: `022-3`) | 3 | 배치 수집기 | raw-archiver |
+| `kovo.rally` | 시즌-경기 번호 | 3 | 배치 수집기 | raw-archiver |
+| `kovo.live` | 시즌-경기 번호 | 3 | 실시간 수집기, 경기 재생기 | live-metrics, raw-archiver |
 | `news.article` | 기사 URL | 1 | 배치 수집기 | article-enricher, raw-archiver |
-| `live.metrics` (추가) | 경기 번호 | 3 | Flink live-metrics | SSE 게이트웨이 |
+| `live.metrics` (추가) | 시즌-경기 번호 | 3 | Flink live-metrics | SSE 게이트웨이 |
 | `ops.collection-log` (추가) | 작업 이름 | 1 | 모든 수집기 | raw-archiver(→ Kibana는 로그로 확인) |
 
 ### 1.8 Airflow DAG 설계
@@ -225,7 +225,7 @@ flowchart LR
 
 | 작업 | 입력 | 처리 | 출력 | 상태(State) |
 |---|---|---|---|---|
-| `raw-archiver` | 전체 토픽 | 토픽·날짜별로 묶어 파일 기록 (5분 또는 128MB마다 파일 확정) | HDFS `/raw/` | Kafka offset (체크포인트) |
+| `raw-archiver` | `kovo.*`, `news.*`, `ops.*` 토픽 (`live.metrics`는 파생 데이터라 제외) | 토픽·수집일별로 묶어 메시지 1건을 1줄로 기록. 파일은 128MB 또는 연 지 5분이 되면 확정되고(실측 약 6분 이내), 다음 체크포인트에 보인다 | HDFS `/raw/topic={토픽}/dt={수집일}/` | Kafka offset (체크포인트, 소비자 그룹 `raw-archiver`에도 커밋) |
 | `live-metrics` | `kovo.live` | 경기 번호별 keyBy → 이벤트 순서대로 점수·세트·서브권·연속 득점 갱신, 세트별 공격 성공률·서브 득점·블로킹·범실 집계 | PostgreSQL `live_match_state`·`live_set_metric`(upsert), Kafka `live.metrics` | 경기별 상태 (경기 종료 이벤트 수신 시 정리) |
 | `article-enricher` | `news.article` | URL 기준 중복 제거(7일 상태 유지), 제목 정규화 후 팀·선수 사전과 매칭해 태그 부여 | Elasticsearch `articles`, PostgreSQL `article`·`article_team`·`article_player` | 최근 7일 URL 집합 |
 
@@ -339,6 +339,7 @@ erDiagram
     varchar home_city
     varchar home_arena
     boolean is_active
+    date last_seen_on "가장 최근 경기일 (옛 시즌 백필이 새 이름을 덮지 않게)"
   }
   PLAYER {
     bigint id PK
@@ -350,6 +351,7 @@ erDiagram
     date birth_date
     varchar nationality
     varchar status "ACTIVE, MILITARY, RETIRED"
+    date last_seen_on
   }
   PLAYER_TEAM_HISTORY {
     bigint id PK
@@ -376,6 +378,9 @@ erDiagram
     smallint duration_min
     int spectators
     varchar referee_main
+    varchar referee_sub
+    varchar city
+    varchar broadcasters "중계 방송사"
   }
   SET_SCORE {
     bigint id PK
@@ -442,7 +447,8 @@ erDiagram
     bigint id PK
     bigint match_id FK
     smallint set_no
-    int rally_no "KOVO rpage"
+    smallint event_no "세트 안 이벤트 순서 (1부터)"
+    int rally_no "KOVO rpage (랠리·교체·작전 타임 묶음)"
     smallint seq "KOVO rindex"
     bigint team_id FK
     bigint player_id FK
@@ -454,6 +460,11 @@ erDiagram
     smallint away_score
   }
 ```
+
+구현 메모 (2026-11-03, `backend/league/models.py`, `backend/matches/models.py`):
+- `team_match_stat`과 `player_match_stat`은 같은 기록 컬럼 20개를 공유한다. 공격(시도·성공·피차단·범실), 서브(시도·에이스·범실), 블로킹(시도·성공·유효·어시스트), 리시브(시도·정확·실패), 디그(시도·성공), 세트(시도·성공), 범실 합계, 경고다. KOVO 필드와의 대응은 모델 주석에 있다.
+- `team_match_stat.points`는 상대 범실 득점을 포함한 팀 총득점이고, `opponent_errors` = 총득점 − 공격 성공 − 블로킹 − 서브 에이스로 계산한다. `player_match_stat`에는 등번호, 포지션, 주장 여부, 세트별 출전(`11100`)을 더 둔다.
+- 테이블 구조는 Django 마이그레이션이 만들고, 데이터는 Spark가 넣는다. 그래서 저장 시각 컬럼은 DB 기본값(`now()`)을 쓴다. Django의 `on_delete=CASCADE`는 DB 규칙이 아니므로, 병합 SQL은 자식 행부터 지운다.
 
 ### 2.2 분석·예측·실시간 도메인
 
@@ -643,7 +654,7 @@ erDiagram
 | `team_match_stat` | (`match_id`, `team_id`) | (`team_id`) | |
 | `player_match_stat` | (`match_id`, `player_id`) | (`player_id`, `match_id`) | 선수별 경기 기록 |
 | `player_attack_stat` | (`player_match_stat_id`, `attack_type`) | - | |
-| `rally_event` | (`match_id`, `set_no`, `rally_no`, `seq`) | (`match_id`, `set_no`), (`player_id`) | 시즌당 30만~40만 행. 시즌 코드 기준 파티셔닝 검토 |
+| `rally_event` | (`match_id`, `set_no`, `event_no`) | (`match_id`, `set_no`), (`player_id`) | 시즌당 30만~40만 행. 시즌 코드 기준 파티셔닝 검토 |
 | `player_team_history` | (`player_id`, `team_id`, `season_id`) | - | |
 | `team_rating` | (`team_id`, `rated_on`) | - | |
 | `match_prediction` | (`match_id`, `model_version_id`) | - | |
@@ -798,6 +809,16 @@ flowchart LR
   D3 -- "선수·팀 목록" --> D4
 ```
 
+구현 (`spark_jobs/curate_kovo.py`, `spark_jobs/sql/merge_kovo.sql`):
+
+| 단계 | 내용 |
+|---|---|
+| 3.1 파싱 | 원본 JSON을 필요한 필드만 명시한 스키마로 읽는다. 같은 항목을 다시 수집한 경우 가장 최근 것만 쓴다(일정·경기 상세는 `시즌-경기번호`, 문자중계는 세트별 가장 최근 수집 실행). 경기·세트 점수는 일정, 선수·팀 기록은 경기 상세, 랠리는 문자중계에서 가져온다 |
+| 3.2 품질 검사 | `SET_COUNT_MISMATCH`(세트 스코어와 세트별 점수 불일치), `MISSING_BOX_SCORE`, `MISSING_RALLY`, `RALLY_SCORE_MISMATCH`(랠리로 센 점수 ≠ 공식 점수), `BOX_SCORE_MISMATCH`(팀 합계 ≠ 선수 합). 앞의 네 가지가 있으면 경기는 `CONFIRMED`가 되지 않고 `FINISHED`로 남는다 |
+| 3.3 정제 테이블 | HDFS `/curated/kovo/{테이블}/season_code=…/`(Parquet, 처리한 시즌만 교체) → PostgreSQL `staging` 스키마(JDBC) → 병합 SQL 한 트랜잭션으로 서빙 테이블에 upsert. 다시 실행해도 결과와 id가 같다 |
+
+랠리 승자는 `rgrade = +1` 이벤트의 팀이다(요구사항 부록 A). 이 규칙으로 계산한 진행 점수가 2025-26 시즌 모든 세트의 공식 점수와 일치했다. 2025-26 + 2026-27 시즌 처리 시간은 약 2분 20초다(YARN 실행기 1개).
+
 ---
 
 ## 4. UML
@@ -857,14 +878,14 @@ sequenceDiagram
     AF->>BC: 경기 상세·문자중계 수집 실행
     BC->>KV: GET /stat/game-schedule/{gnum}
     KV-->>BC: 경기 상세 JSON
-    BC->>K: produce kovo.match (key=gnum)
+    BC->>K: produce kovo.match (key=시즌-gnum)
     BC->>KV: GET /stat/real-time (gnum, 세트별)
     KV-->>BC: 랠리 이벤트 JSON
-    BC->>K: produce kovo.rally (key=gnum)
+    BC->>K: produce kovo.rally (key=시즌-gnum)
     BC->>PG: collection_log 기록
   end
   K-->>FA: 토픽 소비
-  FA->>H: /raw/kovo.match, /raw/kovo.rally 파일 확정
+  FA->>H: /raw/topic=kovo.match, /raw/topic=kovo.rally 파일 확정
   AF->>H: 파일 확정 확인 (Sensor)
   AF->>SP: spark-submit 증분 정제
   SP->>H: /raw 읽기, /curated 쓰기
@@ -892,7 +913,7 @@ sequenceDiagram
     LC->>KV: GET /stat/real-time (gnum)
     KV-->>LC: 랠리 이벤트 전체
     LC->>LC: 마지막 seq 이후 새 이벤트만 선택
-    LC->>K: produce kovo.live (key=gnum)
+    LC->>K: produce kovo.live (key=시즌-gnum)
   end
   K-->>FL: 새 이벤트
   FL->>FL: 경기 상태·세트 지표 갱신 (keyed state)

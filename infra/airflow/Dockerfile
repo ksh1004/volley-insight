@@ -13,3 +13,10 @@ ENV JAVA_HOME=/opt/java/openjdk \
 COPY --chown=airflow:root requirements.txt /requirements.txt
 USER airflow
 RUN pip install --no-cache-dir "apache-airflow==3.0.6" -r /requirements.txt
+
+# PostgreSQL JDBC driver for Spark jobs that write to the serving DB (spark-submit --jars).
+USER root
+RUN mkdir -p /opt/spark-jars \
+ && curl -fsSL -o /opt/spark-jars/postgresql.jar \
+      https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.5/postgresql-42.7.5.jar
+USER airflow

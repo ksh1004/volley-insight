@@ -129,11 +129,11 @@ flowchart LR
 | 토픽 | 메시지 키 | 생산자 | 소비자 |
 |---|---|---|---|
 | `kovo.schedule` | 시즌 코드 | 일정 수집기 | Flink `raw-archiver`(HDFS 적재) |
-| `kovo.match` | 경기 번호 | 경기 상세 기록 수집기 | Flink `raw-archiver` |
-| `kovo.rally` | 경기 번호 | 문자중계 수집기(종료 경기) | Flink `raw-archiver` |
-| `kovo.live` | 경기 번호 | 실시간 수집기, 경기 재생기(HDFS 원천을 다시 발행) | Flink `live-metrics`, Flink `raw-archiver` |
+| `kovo.match` | 시즌-경기 번호 (예: `022-3`) | 경기 상세 기록 수집기 | Flink `raw-archiver` |
+| `kovo.rally` | 시즌-경기 번호 | 문자중계 수집기(종료 경기) | Flink `raw-archiver` |
+| `kovo.live` | 시즌-경기 번호 | 실시간 수집기, 경기 재생기(HDFS 원천을 다시 발행) | Flink `live-metrics`, Flink `raw-archiver` |
 | `news.article` | 기사 URL | 기사 수집기 | Flink `article-enricher`(중복 제거·태깅 후 Elasticsearch 색인), Flink `raw-archiver` |
-| `live.metrics` | 경기 번호 | Flink `live-metrics` | SSE 게이트웨이 |
+| `live.metrics` | 시즌-경기 번호 | Flink `live-metrics` | SSE 게이트웨이 |
 | `ops.collection-log` | 작업 이름 | 모든 수집기 | Flink `raw-archiver` (수집 이력 보관) |
 
 | 항목 | 설정 | 이유 |
@@ -214,6 +214,8 @@ flowchart LR
 #### 4.1.1 KOVO 데이터 출처 (사이트 코드 분석 결과, 2026-11-02)
 
 KOVO 웹사이트(kovo.co.kr)는 `user-api.kovo.co.kr`의 JSON API로 데이터를 불러온다. 아래는 사이트의 공개 자바스크립트 코드를 분석해 확인한 내용이며, API를 직접 호출해 검증하지는 않았다.
+
+> 2026-11-03 직접 호출로 검증: 로그인 없이 조회된다. `/stat/season-list`, `/stat/game-schedule`, `/stat/game-schedule/{gnum}`(조건: gcode·seasonCode·leagueCode), `/stat/real-time`(조건: season·gcode·gnum·hcode·acode·rset·page·size)의 응답 구조를 확인했다. 경기 번호는 한 시즌 안에서 리그·성별을 통틀어 겹치지 않는다(2025-26: 정규리그 1~252, 준PO 253~254, PO 255~258, 챔프전 261~270). 문자중계는 세트 단위로 조회하며, 한 세트(약 250~300개 이벤트)는 `size=500`이면 요청 1번에 받는다. 이벤트의 `rpage`는 묶음 순번으로, 랠리 하나·선수 교체(`CI`/`CO`)·작전 타임(`CT`)이 각각 한 묶음이다(2025-26 3번 경기 2세트: 랠리 묶음 45개 = 20+25점, 교체 6, 작전 타임 4). 세트 시작은 `ST`(rpage 0), 종료는 `ET`(rpage 200)이다.
 
 | 데이터 | API 경로 | 주요 조회 조건 | 제공 내용 | 관련 요구사항 |
 |---|---|---|---|---|
@@ -376,7 +378,7 @@ KOVO 웹사이트(kovo.co.kr)는 `user-api.kovo.co.kr`의 JSON API로 데이터�
 ### 6.2 데이터 저장 위치
 | 계층 | 저장소 | 형식 | 보관 |
 |---|---|---|---|
-| 원천 | HDFS `/raw/{source}/{yyyy}/{mm}/{dd}/` | JSON | 영구 |
+| 원천 | HDFS `/raw/topic={토픽}/dt={yyyy-mm-dd}/` | JSON (메시지 1건 = 1줄) | 영구 |
 | 정제 | HDFS `/curated/{entity}/season={code}/` | Parquet | 영구 |
 | 서빙 | PostgreSQL | 테이블 | 현재 시즌 + 과거 시즌 |
 | 검색 | Elasticsearch | 인덱스 | 기사 2년, 로그 30일 |
@@ -456,7 +458,7 @@ KOVO 웹사이트(kovo.co.kr)는 `user-api.kovo.co.kr`의 JSON API로 데이터�
 
 ## 부록 A. 문자중계 코드표
 
-KOVO 사이트 코드에서 확인한 랠리 이벤트 코드다. 이벤트마다 플레이 코드(`raction`), 결과 코드(`raresult`), 득점(`rgrade`: 1 = 1점, 2 = 2점, -1 = 득점 없음)이 붙는다.
+KOVO 사이트 코드에서 확인한 랠리 이벤트 코드다. 이벤트마다 플레이 코드(`raction`), 결과 코드(`raresult`), 득점(`rgrade`)이 붙는다. `rgrade`는 1 = 이 팀이 이 랠리를 땀, -1 = 이 팀이 실점(범실·피블로킹 등), 0 = 득점과 무관이다. 점수가 난 랠리에는 +1 이벤트와 -1 이벤트가 정확히 하나씩 있으며, +1 이벤트의 팀을 승자로 세면 2025-26 시즌 1,042개 세트의 공식 점수와 모두 일치한다(2026-11-03 검증). 처음 사이트 코드만 보고 적은 "2 = 2점, -1 = 득점 없음"은 실제 데이터와 맞지 않아 고쳤다.
 
 ### A.1 플레이 코드 (raction)
 | 분류 | 코드 |

@@ -82,6 +82,28 @@ docker compose exec django-api python manage.py createsuperuser
 | Flink + Kafka | `docker compose exec flink-jobmanager flink run -d -py /opt/flink/usrlib/jobs/smoke_job.py` |
 | Elasticsearch nori | `curl localhost:9200/_cat/plugins` 에 `analysis-nori` 표시 |
 
+## 데이터 수집 실행
+
+1. 수집: `collectors/README.md` 참고 (예: `python -m collectors games --season 022`). Kafka에 원본이 쌓인다(보관 7일).
+2. 영구 보관: `stream` 프로필을 띄우고 Flink `raw-archiver`를 한 번 제출한다. 이후 Kafka에 들어오는 모든 수집 메시지가 HDFS `/raw/topic={토픽}/dt={수집일}/`에 저장된다.
+
+```bash
+docker compose --profile stream up -d
+docker compose exec flink-jobmanager sh /opt/flink/usrlib/jobs/submit.sh raw_archiver.py raw-archiver
+docker compose exec namenode hdfs dfs -ls -R /raw      # 저장된 파일 확인
+```
+
+`submit.sh`는 같은 이름의 작업이 이미 돌고 있으면 제출하지 않는다. 같은 작업이 두 개 돌면 모든 메시지가 두 번 저장된다.
+
+3. 정제: `batch` 프로필을 띄우고 Spark 작업을 YARN에 제출한다. HDFS 원본을 정리해 `/curated/kovo/`(Parquet)에 쓰고, PostgreSQL 경기·기록 테이블(`match`, `set_score`, `player_match_stat`, `rally_event` 등)에 반영한다. 처리한 시즌만 바뀌고, 다시 실행해도 결과가 같다.
+
+```bash
+docker compose --profile batch up -d
+docker compose exec airflow sh /opt/airflow/spark_jobs/submit.sh curate_kovo.py --seasons 022,023
+```
+
+실행 끝에 품질 검사 결과(문자중계 누락, 랠리 점수 불일치 등)가 출력된다. 문제가 있는 경기는 `FINISHED`로 남고, 없으면 `CONFIRMED`가 된다.
+
 ## 로컬 개발 (컨테이너 밖)
 
 ```bash
