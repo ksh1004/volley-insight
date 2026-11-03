@@ -197,9 +197,9 @@ flowchart LR
 
 | DAG | 실행 주기 | 주요 태스크 | 관련 요구사항 |
 |---|---|---|---|
-| `kovo_daily` | 매일 06:00 | 시즌·팀·선수 정보 수집 → 일정·결과·순위 수집 → (raw 적재 확인) → Spark 정제 → 데이터 마트 갱신 → `entities` 색인 | COL-01, 02, 05, PIPE-04, 05 |
-| `kovo_postgame` | 경기일 18:00~24:00, 20분마다 | 종료 경기 감지 → 경기 상세·문자중계 수집 → Spark 증분 정제 → 전력 지수·데이터 마트 갱신 | COL-03, 10, ANL-01, NFR-13 |
-| `kovo_backfill` | 수동 실행 (시즌 범위 입력) | 시즌별 일정 → 경기별 상세·문자중계 → 정제 | COL-04, PIPE-08 |
+| `kovo_daily` | 매일 06:00 | 시즌 목록 → 현재 시즌 일정·결과 → 최근 7일 중 확정 안 된 종료 경기의 상세·문자중계(누락 보충) → HDFS 적재 확인 → Spark 정제. (구현 예정: 순위·선수 정보 수집, 데이터 마트, `entities` 색인) | COL-01, 02, 05, PIPE-04, 05 |
+| `kovo_postgame` | 매일 14:00~23:40, 20분마다 (주말 경기는 14·16시 시작) | DB에서 어제 이후 시작했는데 확정 안 된 경기 확인(없으면 KOVO 요청 없이 종료) → 그 시즌 일정 갱신 → 끝난 경기의 상세·문자중계 → HDFS 적재 확인 → Spark 정제 → `CONFIRMED`. 문자중계가 아직 없으면 `FINISHED`로 남고 다음 실행이 다시 수집 | COL-03, 10, ANL-01, NFR-13 |
+| `kovo_backfill` | 수동 실행 (`seasons` 예: `001-021`, `limit`, `skip_confirmed`) | 시즌 목록 → 시즌별(차례로) 일정 → 확정 안 된 종료 경기의 상세·문자중계(`020` 이전은 문자중계 없음) → HDFS 적재 확인 → Spark 정제 | COL-04, PIPE-08 |
 | `news_collect` | 매시 정각 | 뉴스 검색 API·RSS 수집 → `news.article` 발행 | COL-07 |
 | `ml_weekly_retrain` | 매주 월 04:00 | 피처 생성 → 후보 모델 학습(Hyperopt) → MLflow `candidate` 등록 → 최근 경기 성능 비교 → 더 좋으면 `champion` 교체 | ANL-03, 09, 10 |
 | `ml_daily_predict` | 매일 07:00 | `champion` 모델로 7일 내 예정 경기 예측 → `match_prediction` 저장 | ANL-03, WEB-08 |
@@ -207,6 +207,12 @@ flowchart LR
 | `reprocess` | 수동 실행 (날짜·시즌 입력) | 원천부터 정제·마트 재생성 | PIPE-08, ADM-02 |
 
 공통 설정: 재시도 3회(5분 간격), 실패 시 관리자 알림(이메일 또는 메신저 웹훅), 동시 실행 1개 (PIPE-09).
+
+구현 메모 (2026-11-03, `airflow/dags/kovo_*.py`, 공통 단계는 `airflow/dags/kovo_tasks/pipeline.py`):
+- **HDFS 적재 확인**: 수집 실행마다 `run_id`, 토픽, 건수를 넘기고, 센서가 WebHDFS로 확정된 파일(숨김 파일 제외)에서 그 `run_id`가 붙은 줄을 센다. 모두 보이면 통과한다(1분 간격, reschedule 모드).
+- **KOVO 요청 제한 공유**: 태스크는 각자 다른 프로세스라, 컨테이너의 잠금 파일(`KOVO_RATE_LOCK_FILE`)로 모든 수집 태스크가 초당 1회를 함께 지킨다.
+- **정제 동시 실행**: Spark 실행마다 전용 staging 스키마를 쓰고 끝나면 지운다. 서빙 테이블 반영은 PostgreSQL advisory lock으로 한 번에 하나만 한다. YARN 자원이 모자라면 두 번째 작업은 YARN 대기열에서 기다린다.
+- 실패 알림은 아직 없다(Airflow UI에서 확인).
 
 ```mermaid
 flowchart LR
@@ -231,6 +237,7 @@ flowchart LR
 
 - 언어는 팀 주 언어에 맞춰 PyFlink(Table API·DataStream API)를 쓴다. Kafka·JDBC·Elasticsearch 커넥터 JAR을 이미지에 포함한다.
 - 체크포인트 30초, 저장 위치는 HDFS `/flink/checkpoints`. 장애 시 마지막 체크포인트부터 재개한다.
+- `raw-archiver`는 `flink-job-keeper` 서비스가 1분마다 확인해 없으면 다시 제출한다(PC·Docker 재시작 대비). 다시 제출된 작업은 소비자 그룹에 커밋된 Kafka 위치부터 읽는다. 체크포인트 간격은 제출하는 쪽 설정을 따르므로 작업 코드에 직접 둔다.
 
 ### 1.10 백엔드·프론트엔드 모듈 구조
 
@@ -288,6 +295,8 @@ flowchart LR
 | `POST /api/admin/jobs/{dag}/run` | 수집·재처리 수동 실행 (Airflow REST API 호출) | ADM-02 |
 
 목록 API는 페이지네이션(기본 20건)을 적용하고, 조회 결과는 갱신 주기에 맞춰 캐시한다(일정·순위 5분, 경기 상세는 확정 후 1일).
+
+구현 메모 (2026-11-03): 경기 경로는 `/api/matches/{시즌-경기번호}`(예: `022-3`)로 했다. 내부 id는 DB를 다시 만들면 바뀌기 때문이다. 팀·선수는 KOVO 코드로 찾는다. 순위와 선수 순위는 데이터 마트(`team_season_summary` 등)가 생기기 전까지 API가 경기 기록에서 바로 계산한다(`backend/league/standings.py`). 캐시는 아직 적용하지 않았다. 구현한 화면은 홈, 일정·결과, 경기 상세, 순위, 팀, 선수다. 프리뷰·실시간·기사·검색은 해당 데이터가 준비된 뒤 만든다.
 
 ---
 
@@ -581,6 +590,12 @@ erDiagram
     timestamptz created_at
   }
 ```
+
+구현 메모 (2026-11-03, `backend/analytics/models.py`, `spark_jobs/build_marts.py`): `team_rating`, `team_season_summary`, `player_season_summary`를 먼저 만들었다(예측 관련 테이블은 예측 모델과 함께).
+- Elo: 시작 1500, K = 24 × (세트 차 1·2·3 → 1, 1.25, 1.5), 홈 이점은 전체 경기의 홈 승률에서 계산(2025-26 기준 57% → 약 49점), 새 시즌 첫 경기 전에 1500 쪽으로 1/3 되돌림. 경기 전 Elo 확률의 적중률(약 62%)이 예측 모델의 기준선이다.
+- 사이드아웃율 = 상대 서브 랠리 중 득점 비율, 브레이크율 = 자기 서브 랠리 중 득점 비율. 문자중계가 있는 2023-24 시즌부터 계산된다.
+- 선수 백분위는 같은 시즌·대회·성별·포지션의 순위 자격 선수(팀 세트의 1/3 이상 출전) 안에서 계산하고 `percentiles`(JSON)에 둔다.
+- 마트는 매 실행마다 전체 시즌으로 다시 계산해 한 트랜잭션으로 교체한다(Elo가 전체 이력에 의존). `kovo_daily`·`kovo_postgame`·`kovo_backfill`의 정제 다음 단계로 실행된다.
 
 ### 2.3 기사·회원·운영 도메인
 

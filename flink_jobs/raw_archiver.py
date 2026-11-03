@@ -29,6 +29,9 @@ t_env = TableEnvironment.create(EnvironmentSettings.in_streaming_mode())
 config = t_env.get_config()
 config.set("pipeline.name", "raw-archiver")
 config.set("table.local-time-zone", "Asia/Seoul")
+# Files are finished and Kafka offsets committed only on checkpoints. Set it here, not only in the cluster
+# config: a job takes this setting from whoever submits it (e.g. the flink-job-keeper container).
+config.set("execution.checkpointing.interval", "30 s")
 
 t_env.execute_sql(f"""
     CREATE TABLE kafka_in (

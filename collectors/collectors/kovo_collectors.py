@@ -22,6 +22,9 @@ SKIP_LEAGUES = {"200", "801", "901"}
 # One set has about 250-300 events, so 500 returns a whole set in one request.
 RALLY_PAGE_SIZE = 500
 MAX_PAGES_PER_SET = 10
+# KOVO has play-by-play from 2023-24 (season 020) on: game 1 of seasons 001-019 returns an empty feed,
+# 020 and 021 return events (checked 2026-11-03). Older games are not requested.
+PLAY_BY_PLAY_FROM = "020"
 
 
 def payload_of(body):
@@ -109,9 +112,14 @@ class SeasonCollector(BaseCollector):
     name = "kovo.seasons"
     topic = SCHEDULE_TOPIC
 
+    def __init__(self, client, publisher):
+        super().__init__(client, publisher)
+        self.last_body = None  # response of the latest run, e.g. to find the current season
+
     def collect(self, gcode="001"):
         params = {"gcode": gcode}
-        yield "/stat/season-list", params, self.client.season_list(gcode)
+        self.last_body = self.client.season_list(gcode)
+        yield "/stat/season-list", params, self.last_body
 
     def key_of(self, endpoint, request_params, body):
         return f"season-list-{request_params['gcode']}"
@@ -123,9 +131,19 @@ class ScheduleCollector(BaseCollector):
     name = "kovo.schedule"
     topic = SCHEDULE_TOPIC
 
+    def __init__(self, client, publisher):
+        super().__init__(client, publisher)
+        self.games = []  # schedule items seen by the latest run, so callers need not request them again
+
     def collect(self, season_code, gcode="001", leagues=None, genders=("1", "2"), size=200):
+        self.games = []
         for params, body in schedule_pages(self.client, season_code, gcode, leagues, genders, size):
+            self.games += (payload_of(body) or {}).get("content") or []
             yield "/stat/game-schedule", params, body
+
+    def finished_games(self):
+        """Finished games among those seen by the latest run, ordered by game number."""
+        return sorted((Game.from_schedule(g) for g in self.games if is_finished(g)), key=lambda g: g.gnum)
 
     def key_of(self, endpoint, request_params, body):
         return request_params["seasonCode"]
@@ -159,7 +177,13 @@ class RallyCollector(BaseCollector):
         return describe_games(games, gcode)
 
     def collect(self, games, gcode="001", size=RALLY_PAGE_SIZE):
+        old = [g for g in games if g.season < PLAY_BY_PLAY_FROM]
+        if old:
+            log.info("skipping %d game(s) before season %s: KOVO has no play-by-play for them",
+                     len(old), PLAY_BY_PLAY_FROM)
         for g in games:
+            if g.season < PLAY_BY_PLAY_FROM:
+                continue
             for rset in range(1, g.sets + 1):
                 for page in range(MAX_PAGES_PER_SET):
                     body = self.client.real_time(gcode, g.season, g.gnum, g.hcode, g.acode, rset, page=page, size=size)
@@ -173,6 +197,8 @@ class RallyCollector(BaseCollector):
                         break
                 else:
                     raise RuntimeError(f"game {g.key} set {rset} has more than {MAX_PAGES_PER_SET} pages")
+                if rset == 1 and page == 0 and not feed:
+                    break  # nothing published for this game yet; the next run asks again
 
     def key_of(self, endpoint, request_params, body):
         return f"{request_params['season']}-{request_params['gnum']}"

@@ -105,10 +105,12 @@ services:
   frontend:
     profiles: [app]
     image: node:22-alpine
+    restart: unless-stopped
     working_dir: /app
     command: sh -c "npm ci && npm run dev -- --host 0.0.0.0"
     environment:
       VITE_API_PROXY: http://django-api:8000
+      VITE_USE_POLLING: "true"
     volumes:
       - ./frontend:/app
       - frontend-node-modules:/app/node_modules
@@ -176,6 +178,9 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       MLFLOW_TRACKING_URI: http://mlflow:5000
       PYTHONPATH: /opt/airflow/collectors
+      # every KOVO request from any task process shares one 1 req/s budget (NFR-01)
+      KOVO_RATE_LOCK_FILE: /tmp/kovo-rate.lock
+      WEBHDFS_URL: http://namenode:9870/webhdfs/v1
       # serving DB, used by Spark jobs (driver runs here in client mode) to load curated tables
       POSTGRES_HOST: postgres
       POSTGRES_USER: ${POSTGRES_USER}
@@ -192,7 +197,7 @@ services:
       postgres: { condition: service_healthy }
       kafka: { condition: service_healthy }
       resourcemanager: { condition: service_started }
-    mem_limit: 3g
+    mem_limit: 4g
 
   mlflow:
     profiles: [batch]
@@ -247,6 +252,22 @@ services:
       - ./flink_jobs:/opt/flink/usrlib/jobs
     depends_on: [flink-jobmanager, datanode]
     mem_limit: 2300m
+
+  # Keeps raw-archiver submitted: after a PC/Docker restart the job manager comes back empty, so this
+  # re-submits the job (from its committed Kafka offsets). Checks every minute; never submits a second copy.
+  flink-job-keeper:
+    profiles: [stream]
+    image: volley/flink:1.20.1
+    restart: unless-stopped
+    command: >
+      sh -c "while true; do sh /opt/flink/usrlib/jobs/submit.sh raw_archiver.py raw-archiver; sleep 60; done"
+    environment:
+      <<: *flink-env
+      FLINK_JOBMANAGER: flink-jobmanager:8081
+    volumes:
+      - ./flink_jobs:/opt/flink/usrlib/jobs
+    depends_on: [flink-jobmanager, flink-taskmanager]
+    mem_limit: 512m
 
   # ---------------- search ----------------
   elasticsearch:

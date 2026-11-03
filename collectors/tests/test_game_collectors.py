@@ -101,3 +101,15 @@ def test_real_time_request_parameters():
     assert url == "https://example.test/stat/real-time"
     assert params == {"season": "022", "gcode": "001", "gnum": 3, "hcode": "1006", "acode": "1009",
                       "rset": 2, "page": 0, "size": 500}
+
+
+def test_rally_collector_skips_seasons_without_play_by_play():
+    client, pub = FakeClient(), RecordingPublisher()
+    n = RallyCollector(client, pub).run(games=[replace(GAME, season="019")])
+    assert n == 0 and client.rt_calls == []
+
+
+def test_rally_collector_stops_a_game_when_set_one_is_empty():
+    client = FakeClient(events_per_set=0)  # KOVO has not published this game's play-by-play yet
+    n = RallyCollector(client, RecordingPublisher()).run(games=[GAME, replace(GAME, gnum=4)])
+    assert client.rt_calls == [(3, 1, 0), (4, 1, 0)] and n == 2

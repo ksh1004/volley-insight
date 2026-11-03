@@ -87,3 +87,11 @@ def test_collection_log_records_count_on_success():
     SeasonCollector(FakeClient(), pub).run(gcode="001")
     done = pub.on("ops.collection-log")[-1][2]
     assert done["status"] == "SUCCESS" and done["record_count"] == 1
+
+
+def test_schedule_collector_keeps_games_of_its_run_and_run_id():
+    pub = RecordingPublisher()
+    col = ScheduleCollector(FakeClient(), pub)
+    col.run(season_code="023", genders=("1",))
+    assert col.games == [{"gnum": 1}]
+    assert col.run_id and all(m[2]["run_id"] == col.run_id for m in pub.on("kovo.schedule"))

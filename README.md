@@ -104,6 +104,64 @@ docker compose exec airflow sh /opt/airflow/spark_jobs/submit.sh curate_kovo.py 
 
 실행 끝에 품질 검사 결과(문자중계 누락, 랠리 점수 불일치 등)가 출력된다. 문제가 있는 경기는 `FINISHED`로 남고, 없으면 `CONFIRMED`가 된다.
 
+4. 분석 마트: 정제된 전체 시즌으로 팀 전력 지수(Elo), 팀·선수 시즌 요약(사이드아웃·브레이크율, 포지션 내 백분위)을 계산한다. Airflow DAG가 정제 다음에 자동으로 실행한다.
+
+```bash
+docker compose exec airflow sh /opt/airflow/spark_jobs/submit.sh build_marts.py
+```
+
+## 자동 실행 (Airflow, <http://localhost:8080>)
+
+위 1~3단계를 Airflow DAG가 이어서 실행한다. `batch`·`stream` 프로필이 떠 있어야 한다(Kafka → HDFS 보관에 Flink `raw-archiver` 필요).
+
+| DAG | 언제 | 하는 일 |
+|---|---|---|
+| `kovo_daily` | 매일 06:00 | 현재 시즌 일정·결과 갱신, 최근 7일 중 빠진 경기 보충, 정제 |
+| `kovo_postgame` | 14:00~23:40, 20분마다 | 끝난 경기의 상세·문자중계 수집과 정제. 시작한 경기가 없으면 KOVO에 요청하지 않고 끝난다 |
+| `kovo_backfill` | 수동 | 과거 시즌. 실행 시 `seasons`(예: `001-021`), `limit`(시험용 경기 수)를 입력 |
+
+```bash
+docker compose exec airflow airflow dags trigger kovo_backfill --conf '{"seasons": "019-021"}'
+docker compose exec airflow airflow dags pause kovo_postgame     # 자동 실행 멈추기
+```
+
+DAG 보조 코드 테스트: `.venv/Scripts/python -m pytest airflow/tests`
+
+## 사이트 (<http://localhost:5173>)
+
+| 화면 | 주소 | API |
+|---|---|---|
+| 홈: 오늘·다음 경기, 최근 결과, 남녀부 순위 | `/` | `GET /api/matches?date=` · `?status=finished&order=desc`, `GET /api/standings` |
+| 일정·결과 (시즌·남녀부·팀·월) | `/schedule` | `GET /api/matches?season=&gender=&team=&month=YYYY-MM` |
+| 경기 상세: 세트 점수, 팀 비교, 선수 기록, 세트별 점수 흐름, 문자중계 | `/matches/022-3` | `GET /api/matches/{시즌-경기번호}`, `GET /api/matches/{키}/rallies?set=` |
+| 순위: 팀 순위, 부문별 선수 순위 | `/standings` | `GET /api/standings?season=&gender=`, `GET /api/standings/players?category=` |
+| 팀: 시즌 성적, 리그 평균 대비 지표, 선수단, 최근·다음 경기 | `/teams/1001` | `GET /api/teams/{팀코드}?season=` |
+| 선수: 시즌별·경기별 기록 | `/players/1000525` | `GET /api/players/{선수코드}?season=` |
+
+경기 주소는 내부 id 대신 `시즌-경기번호`라서 DB를 다시 만들어도 바뀌지 않는다. 순위는 V-리그 규칙(승점 → 승수 → 세트 득실률 → 점수 득실률, 승자승 제외)으로 API가 계산한다. 선수 순위 자격(팀 세트의 1/3 이상 출전 등)은 이 사이트의 기준이다.
+
+테스트: `docker compose exec django-api python manage.py test league matches`
+
+Windows의 Docker Desktop은 연결 폴더의 파일 변경을 컨테이너에 알리지 않아서, 프론트엔드 컨테이너는 `VITE_USE_POLLING=true`로 변경을 확인한다.
+
+## PC를 껐다 켠 뒤 이어서 하기
+
+> Docker 데이터 위치: `D:\Docker\wsl\disk\docker_data.vhdx`. C드라이브 공간이 부족해서 `C:\Users\SSAFY\AppData\Local\Docker\wsl\disk` 폴더를 D드라이브로 연결(junction)해 두었다. Docker Desktop 4.88.1의 "Disk image location" 이동 기능은 복사 후 실패로 처리되므로 쓰지 않는다. 연결 확인: `Get-Item C:\Users\SSAFY\AppData\Local\Docker\wsl\disk | Select LinkType, Target`
+
+데이터(Kafka, HDFS, PostgreSQL, MLflow)는 Docker 볼륨에 남고, 컨테이너는 Docker Desktop이 켜지면 다시 뜬다. Flink `raw-archiver`는 `flink-job-keeper` 서비스가 1분마다 확인해 없으면 다시 제출한다(Kafka에 커밋된 위치부터 이어서 저장).
+
+1. Docker Desktop을 실행한다. (설정 → General → "Start Docker Desktop when you sign in"을 켜 두면 생략 가능)
+2. 상태 확인과 재시작:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts
+esume.ps1            # 전체 서비스 기동 + 보관 작업·DAG·DB 상태
+powershell -ExecutionPolicy Bypass -File scripts
+esume.ps1 -Backfill  # 끝나지 않은 백필이 있으면 다시 실행
+```
+
+백필을 다시 실행하면 이미 `CONFIRMED`인 경기는 건너뛰고 남은 경기만 수집한다. 중단 시점에 돌던 Airflow 태스크는 재시작 후 자동으로 재시도(최대 3회)되므로, 실행이 아직 `running`이면 그대로 둔다.
+
 ## 로컬 개발 (컨테이너 밖)
 
 ```bash

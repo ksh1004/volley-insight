@@ -12,6 +12,9 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // Docker Desktop on Windows does not forward file change events into bind mounts,
+    // so inside the container Vite has to poll or it keeps serving old code.
+    watch: process.env.VITE_USE_POLLING === 'true' ? { usePolling: true, interval: 300 } : undefined,
     proxy: {
       '/api': { target: apiTarget, changeOrigin: true },
     },

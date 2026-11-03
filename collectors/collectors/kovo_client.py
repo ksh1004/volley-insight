@@ -9,7 +9,7 @@ import time
 import requests
 
 from . import settings
-from .rate_limiter import RateLimiter
+from .rate_limiter import default_limiter
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ class KovoApiError(RuntimeError):
 class KovoClient:
     def __init__(self, base_url=None, limiter=None, session=None, max_retries=3, backoff_sec=2.0, timeout=10):
         self.base_url = (base_url or settings.KOVO_API_BASE).rstrip("/")
-        self.limiter = limiter or RateLimiter(settings.KOVO_MIN_INTERVAL_SEC)
+        self.limiter = limiter or default_limiter(settings.KOVO_MIN_INTERVAL_SEC, settings.KOVO_RATE_LOCK_FILE)
         self.session = session or requests.Session()
         self.session.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json", "Accept-Language": "ko"})
         self.max_retries = max_retries

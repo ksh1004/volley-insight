@@ -41,6 +41,10 @@ BOX = [("att", "attack_attempts"), ("ats", "attack_success"), ("atf", "attack_bl
        ("rt", "receive_attempts"), ("rs", "receive_excellent"), ("rf", "receive_errors"),
        ("dt", "dig_attempts"), ("ds", "dig_success"), ("sett", "set_attempts"), ("sets", "set_success"),
        ("err", "errors"), ("warning", "warnings")]
+# KOVO has play-by-play from season 020 (2023-24) on (same constant as collectors PLAY_BY_PLAY_FROM).
+# Missing play-by-play is only an issue from that season on. A fixed value, not "this season has none",
+# so a new season whose play-by-play KOVO publishes late is still flagged and collected again.
+PLAY_BY_PLAY_FROM = "020"
 # Issues that keep a finished match from becoming CONFIRMED
 BLOCKING = ["SET_COUNT_MISMATCH", "MISSING_BOX_SCORE", "MISSING_RALLY", "RALLY_SCORE_MISMATCH"]
 
@@ -253,7 +257,7 @@ def quality_issues(matches, set_scores, team_stats, player_stats, rally):
 
     final = rally.groupBy("season_code", "game_no", "set_no").agg(
         F.max("home_score").alias("rh"), F.max("away_score").alias("ra"), F.count("*").alias("events"))
-    sets_of_finished = set_scores.join(finished.select("season_code", "game_no"), ["season_code", "game_no"])
+    sets_of_finished = set_scores.join(finished.select("season_code", "game_no"), ["season_code", "game_no"])         .where(F.col("season_code") >= PLAY_BY_PLAY_FROM)
     checked = sets_of_finished.join(final, ["season_code", "game_no", "set_no"], "left")
     missing_rally = checked.where(F.col("events").isNull()).select(
         "season_code", "game_no", "set_no", F.lit("MISSING_RALLY").alias("check"),
@@ -320,21 +324,38 @@ def load_postgres(spark, tables, seasons):
 
     host, port = os.environ.get("POSTGRES_HOST", "postgres"), os.environ.get("POSTGRES_PORT", "5432")
     db, user, password = os.environ.get("SERVICE_DB", "service"), os.environ["POSTGRES_USER"], os.environ["POSTGRES_PASSWORD"]
-    with psycopg2.connect(host=host, port=port, dbname=db, user=user, password=password) as conn, conn.cursor() as cur:
-        cur.execute("CREATE SCHEMA IF NOT EXISTS staging")
-    url = f"jdbc:postgresql://{host}:{port}/{db}?rewriteBatchedInserts=true"
-    for name, df in tables.items():
-        (df.write.format("jdbc").mode("overwrite")
-         .options(url=url, dbtable=f"staging.{name}", user=user, password=password,
-                  driver="org.postgresql.Driver", batchsize="5000")
-         .save())
-    conn = psycopg2.connect(host=host, port=port, dbname=db, user=user, password=password)
+    # Each run gets its own staging schema, so two runs at once (e.g. kovo_daily and kovo_postgame) never
+    # overwrite each other's staging tables. The merge itself takes an advisory lock and runs one at a time.
+    app_id = spark.sparkContext.applicationId
+    schema = "staging_" + "".join(ch if ch.isalnum() else "_" for ch in app_id.lower())
+    connect = lambda: psycopg2.connect(host=host, port=port, dbname=db, user=user, password=password)  # noqa: E731
+    conn = connect()
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
+    conn.close()
     try:
-        with conn, conn.cursor() as cur:  # one transaction: the site never sees a half-merged season
-            cur.execute(MERGE_SQL.read_text(encoding="utf-8"))
-            for row in cur.fetchall() if cur.description else []:
-                print("merge:", *row)
+        url = f"jdbc:postgresql://{host}:{port}/{db}?rewriteBatchedInserts=true"
+        for name, df in tables.items():
+            (df.write.format("jdbc").mode("overwrite")
+             .options(url=url, dbtable=f"{schema}.{name}", user=user, password=password,
+                      driver="org.postgresql.Driver", batchsize="5000")
+             .save())
+        sql = MERGE_SQL.read_text(encoding="utf-8").replace("staging.", f"{schema}.")
+        conn = connect()
+        try:
+            with conn, conn.cursor() as cur:  # one transaction: the site never sees a half-merged season
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext('merge_kovo'))")
+                cur.execute(sql)
+                for row in cur.fetchall() if cur.description else []:
+                    print("merge:", *row)
+        finally:
+            conn.close()
     finally:
+        conn = connect()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         conn.close()
 
 

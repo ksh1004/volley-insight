@@ -20,6 +20,7 @@ class BaseCollector:
         self.client = client
         self.publisher = publisher
         self.logger = CollectionLogger(publisher)
+        self.run_id = None  # id of the latest run; every envelope of that run carries it
 
     # subclasses implement these
     def collect(self, **params):
@@ -36,7 +37,7 @@ class BaseCollector:
         check = getattr(self.publisher, "check", None)
         if check:
             check()  # no KOVO request is made if Kafka is down
-        run_id = uuid.uuid4().hex
+        run_id = self.run_id = uuid.uuid4().hex
         record = self.logger.start(self.name, self.describe(**params), run_id)
         count = 0
         try:

@@ -36,3 +36,29 @@ def test_no_wait_when_interval_already_passed():
     c.t += 2.5
     lim.wait()
     assert c.slept == []
+
+
+import os  # noqa: E402
+
+import pytest  # noqa: E402
+
+from collectors.rate_limiter import FileRateLimiter, default_limiter  # noqa: E402
+
+posix_only = pytest.mark.skipif(os.name != "posix", reason="fcntl lock file is Linux/macOS only")
+
+
+@posix_only
+def test_file_limiter_shares_spacing_between_instances(tmp_path):
+    """Two limiters on the same file behave like one (two Airflow task processes)."""
+    c = FakeClock()
+    path = str(tmp_path / "kovo.lock")
+    a = FileRateLimiter(path, 1.0, clock=c.now, sleep=c.sleep)
+    b = FileRateLimiter(path, 1.0, clock=c.now, sleep=c.sleep)
+    a.wait()
+    c.t += 0.25
+    b.wait()
+    assert c.slept == [0.75]
+
+
+def test_default_limiter_falls_back_without_lock_file():
+    assert isinstance(default_limiter(1.0, ""), RateLimiter)
