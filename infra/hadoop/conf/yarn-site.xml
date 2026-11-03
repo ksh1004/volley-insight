@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<configuration>
+  <property><name>yarn.resourcemanager.hostname</name><value>resourcemanager</value></property>
+  <property><name>yarn.resourcemanager.bind-host</name><value>0.0.0.0</value></property>
+  <property><name>yarn.nodemanager.bind-host</name><value>0.0.0.0</value></property>
+
+  <!-- dev sizing: one nodemanager with 3 GB / 4 cores for Spark executors (design.md 1.5) -->
+  <property><name>yarn.nodemanager.resource.memory-mb</name><value>3072</value></property>
+  <property><name>yarn.nodemanager.resource.cpu-vcores</name><value>4</value></property>
+  <property><name>yarn.scheduler.minimum-allocation-mb</name><value>256</value></property>
+  <property><name>yarn.scheduler.maximum-allocation-mb</name><value>3072</value></property>
+  <property><name>yarn.nodemanager.vmem-check-enabled</name><value>false</value></property>
+  <property><name>yarn.nodemanager.pmem-check-enabled</name><value>false</value></property>
+
+  <property><name>yarn.nodemanager.local-dirs</name><value>/data/nm-local</value></property>
+  <property><name>yarn.nodemanager.log-dirs</name><value>/data/nm-logs</value></property>
+  <property><name>yarn.log-aggregation-enable</name><value>true</value></property>
+  <property><name>yarn.nodemanager.env-whitelist</name>
+    <value>JAVA_HOME,HADOOP_COMMON_HOME,HADOOP_HDFS_HOME,HADOOP_CONF_DIR,CLASSPATH_PREPEND_DISTCACHE,HADOOP_YARN_HOME,HADOOP_HOME,PATH,LANG,TZ,HADOOP_MAPRED_HOME,PYSPARK_PYTHON</value></property>
+</configuration>

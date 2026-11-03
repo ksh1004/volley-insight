@@ -1,0 +1,41 @@
+# Secrets
+.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Django
+backend/staticfiles/
+backend/media/
+
+# Airflow (runtime files written into the mounted folder)
+airflow/logs/
+airflow/*.cfg
+airflow/*.generated
+airflow/*.pid
+
+# ML
+mlruns/
+*.ipynb_checkpoints
+
+# Personal Claude Code settings
+.claude/settings.local.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

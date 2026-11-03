@@ -1,0 +1,5 @@
+apache-airflow-providers-apache-spark
+pyspark==3.5.5
+confluent-kafka==2.10.1
+requests==2.32.4
+psycopg2-binary==2.9.10

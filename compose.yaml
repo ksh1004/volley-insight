@@ -1,0 +1,299 @@
+# Development stack (design.md 1.5). Docker Desktop has ~16 GB here, so services are grouped:
+#   (no profile)     core: postgres, kafka, kafka-init       -> always started
+#   --profile app    django-api, frontend
+#   --profile batch  hadoop (hdfs + yarn), airflow, mlflow
+#   --profile stream hdfs + flink
+#   --profile search elasticsearch, kibana, filebeat
+# Example: docker compose --profile app up -d
+# All ports are bound to 127.0.0.1 only (NFR-34).
+
+x-hadoop: &hadoop
+  build: ./infra/hadoop
+  image: volley/hadoop:3.4.1
+  restart: unless-stopped
+
+services:
+  # ---------------- core ----------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${SERVICE_DB}
+      AIRFLOW_DB: ${AIRFLOW_DB}
+      MLFLOW_DB: ${MLFLOW_DB}
+      TZ: Asia/Seoul
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./infra/postgres/init-databases.sh:/docker-entrypoint-initdb.d/10-init-databases.sh:ro
+    ports: ["127.0.0.1:5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${SERVICE_DB}"]
+      interval: 5s
+      retries: 20
+    mem_limit: 1g
+
+  # New named volumes are owned by root; the kafka image runs as appuser (uid 1000).
+  kafka-volume-perms:
+    image: apache/kafka:3.9.0
+    user: "0:0"
+    entrypoint: ["sh", "-c", "chown -R 1000:1000 /tmp/kraft-combined-logs"]
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    restart: "no"
+
+  kafka:
+    image: apache/kafka:3.9.0
+    restart: unless-stopped
+    depends_on:
+      kafka-volume-perms: { condition: service_completed_successfully }
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    ports: ["127.0.0.1:29092:29092"]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      retries: 20
+    mem_limit: 1g
+
+  kafka-init:
+    image: apache/kafka:3.9.0
+    depends_on:
+      kafka: { condition: service_healthy }
+    entrypoint: ["bash", "/scripts/create-topics.sh"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    volumes:
+      - ./infra/kafka/create-topics.sh:/scripts/create-topics.sh:ro
+    restart: "no"
+
+  # ---------------- app ----------------
+  django-api:
+    profiles: [app]
+    build: ./backend
+    image: volley/backend:dev
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./backend:/app
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    mem_limit: 768m
+
+  frontend:
+    profiles: [app]
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0"
+    environment:
+      VITE_API_PROXY: http://django-api:8000
+    volumes:
+      - ./frontend:/app
+      - frontend-node-modules:/app/node_modules
+    ports: ["127.0.0.1:5173:5173"]
+    depends_on: [django-api]
+    mem_limit: 768m
+
+  # ---------------- batch / stream: hadoop ----------------
+  namenode:
+    <<: *hadoop
+    profiles: [batch, stream]
+    hostname: namenode
+    command: ["namenode"]
+    volumes: ["hdfs-nn:/data/nn"]
+    ports: ["127.0.0.1:9870:9870"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9870/ >/dev/null"]
+      interval: 10s
+      retries: 30
+    mem_limit: 768m
+
+  datanode:
+    <<: *hadoop
+    profiles: [batch, stream]
+    hostname: datanode
+    command: ["datanode"]
+    volumes: ["hdfs-dn:/data/dn"]
+    depends_on:
+      namenode: { condition: service_healthy }
+    mem_limit: 768m
+
+  resourcemanager:
+    <<: *hadoop
+    profiles: [batch]
+    hostname: resourcemanager
+    command: ["resourcemanager"]
+    ports: ["127.0.0.1:8088:8088"]
+    depends_on:
+      namenode: { condition: service_healthy }
+    mem_limit: 768m
+
+  nodemanager:
+    <<: *hadoop
+    profiles: [batch]
+    hostname: nodemanager
+    command: ["nodemanager"]
+    depends_on: [resourcemanager]
+    mem_limit: 3500m
+
+  # ---------------- batch: airflow, mlflow ----------------
+  airflow:
+    profiles: [batch]
+    build: ./infra/airflow
+    image: volley/airflow:3.0.6
+    hostname: airflow
+    restart: unless-stopped
+    command: standalone
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${AIRFLOW_DB}
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Seoul
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+      AIRFLOW_CONN_SPARK_YARN: '{"conn_type": "spark", "host": "yarn", "extra": {"deploy-mode": "client"}}'
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      PYTHONPATH: /opt/airflow/collectors
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./spark_jobs:/opt/airflow/spark_jobs
+      - ./collectors:/opt/airflow/collectors
+      - ./infra/hadoop/conf:/opt/hadoop-conf:ro
+      - airflow-logs:/opt/airflow/logs
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      resourcemanager: { condition: service_started }
+    mem_limit: 3g
+
+  mlflow:
+    profiles: [batch]
+    build: ./infra/mlflow
+    image: volley/mlflow:3.1.1
+    restart: unless-stopped
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${MLFLOW_DB}
+      --artifacts-destination /mlflow/artifacts --serve-artifacts
+      --host 0.0.0.0 --port 5000
+    volumes: ["mlflow-artifacts:/mlflow/artifacts"]
+    ports: ["127.0.0.1:5000:5000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    mem_limit: 768m
+
+  # ---------------- stream: flink ----------------
+  flink-jobmanager:
+    profiles: [stream]
+    build:
+      context: ./infra/flink
+      additional_contexts:
+        hadoop: service:namenode
+    image: volley/flink:1.20.1
+    hostname: flink-jobmanager
+    restart: unless-stopped
+    command: jobmanager
+    environment: &flink-env
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        parallelism.default: 1
+        jobmanager.memory.process.size: 1024m
+        taskmanager.memory.process.size: 2048m
+        execution.checkpointing.interval: 30s
+        state.checkpoints.dir: hdfs://namenode:9000/flink/checkpoints
+    volumes:
+      - ./flink_jobs:/opt/flink/usrlib/jobs
+    ports: ["127.0.0.1:8081:8081"]
+    depends_on:
+      namenode: { condition: service_healthy }
+    mem_limit: 1200m
+
+  flink-taskmanager:
+    profiles: [stream]
+    image: volley/flink:1.20.1
+    restart: unless-stopped
+    command: taskmanager
+    environment: *flink-env
+    volumes:
+      - ./flink_jobs:/opt/flink/usrlib/jobs
+    depends_on: [flink-jobmanager, datanode]
+    mem_limit: 2300m
+
+  # ---------------- search ----------------
+  elasticsearch:
+    profiles: [search]
+    build: ./infra/elasticsearch
+    image: volley/elasticsearch:8.17.4
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+    volumes: ["es-data:/usr/share/elasticsearch/data"]
+    ports: ["127.0.0.1:9200:9200"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health >/dev/null"]
+      interval: 10s
+      retries: 30
+    mem_limit: 2g
+
+  kibana:
+    profiles: [search]
+    image: kibana:8.17.4
+    restart: unless-stopped
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports: ["127.0.0.1:5601:5601"]
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+    mem_limit: 1g
+
+  filebeat:
+    profiles: [search]
+    image: elastic/filebeat:8.17.4
+    restart: unless-stopped
+    user: root
+    command: ["filebeat", "-e", "--strict.perms=false"]
+    environment:
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    volumes:
+      - ./infra/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+    mem_limit: 256m
+
+volumes:
+  pg-data:
+  kafka-data:
+  hdfs-nn:
+  hdfs-dn:
+  airflow-logs:
+  mlflow-artifacts:
+  es-data:
+  frontend-node-modules:

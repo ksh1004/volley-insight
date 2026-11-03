@@ -1,0 +1,21 @@
+# Ships every container's stdout/stderr to Elasticsearch (NFR-23).
+filebeat.inputs:
+  - type: filestream
+    id: docker-containers
+    paths:
+      - /var/lib/docker/containers/*/*.log
+    parsers:
+      - container: ~
+    processors:
+      - add_docker_metadata:
+          host: "unix:///var/run/docker.sock"
+
+output.elasticsearch:
+  hosts: ["${ELASTICSEARCH_URL:http://elasticsearch:9200}"]
+  index: "logs-volley-%{+yyyy.MM.dd}"
+
+setup.template.name: "logs-volley"
+setup.template.pattern: "logs-volley-*"
+setup.ilm.enabled: false
+setup.kibana.host: "http://kibana:5601"
+logging.level: warning
