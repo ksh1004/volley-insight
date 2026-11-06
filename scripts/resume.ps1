@@ -3,7 +3,8 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\resume.ps1             # start + status
 #   powershell -ExecutionPolicy Bypass -File scripts\resume.ps1 -Backfill   # also re-run an unfinished backfill
 #
-# Data survives a shutdown (Docker volumes). raw-archiver is re-submitted by the flink-job-keeper service.
+# Data survives a shutdown (Docker volumes). raw-archiver, article-enricher and live-metrics are re-submitted by
+# flink-job-keeper; live-collector picks up today's games by itself.
 # A re-run backfill skips games that are already CONFIRMED, so it only fetches what is still missing.
 param(
     [switch]$Backfill,
@@ -18,7 +19,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "Docker Desktop is not running. Start it, wait until it says 'Engine running', then run this again." -ForegroundColor Yellow
     exit 1
 }
-docker compose --profile app --profile batch --profile stream up -d
+docker compose --profile app --profile batch --profile stream --profile search up -d
 
 Write-Host "`n== 2. Waiting for Airflow (up to 3 min)" -ForegroundColor Cyan
 for ($i = 0; $i -lt 36; $i++) {
@@ -30,7 +31,9 @@ for ($i = 0; $i -lt 36; $i++) {
 Write-Host "`n== 3. Kafka -> HDFS archiving (Flink raw-archiver)" -ForegroundColor Cyan
 for ($i = 0; $i -lt 18; $i++) {
     $jobs = docker compose exec -T flink-jobmanager flink list -r 2>$null
-    if ($jobs -match "raw-archiver \(RUNNING\)") { Write-Host "raw-archiver RUNNING"; break }
+    if (($jobs -match "raw-archiver \(RUNNING\)") -and ($jobs -match "article-enricher \(RUNNING\)") -and ($jobs -match "live-metrics \(RUNNING\)")) {
+        Write-Host "raw-archiver, article-enricher, live-metrics RUNNING"; break
+    }
     Start-Sleep -Seconds 10
 }
 if (-not ($jobs -match "raw-archiver \(RUNNING\)")) { Write-Host "raw-archiver not running yet; see: docker compose logs flink-job-keeper" -ForegroundColor Yellow }
@@ -49,7 +52,7 @@ for ($i = 0; $i -lt 12 -and -not $ok; $i++) {
 if (-not $ok) { Write-Host "no completed checkpoint yet; HDFS archiving is not working. Check: docker compose logs flink-taskmanager" -ForegroundColor Yellow }
 
 Write-Host "`n== 4. Latest DAG runs" -ForegroundColor Cyan
-foreach ($d in "kovo_backfill", "kovo_daily", "kovo_postgame") {
+foreach ($d in "kovo_backfill", "kovo_daily", "kovo_postgame", "news_collect", "live_replay") {
     $row = (docker compose exec -T airflow airflow dags list-runs $d -o plain 2>$null | Select-Object -Skip 1 -First 1)
     Write-Host ("{0,-14} {1}" -f $d, $row)
 }
@@ -58,6 +61,21 @@ Write-Host "`n== 5. Matches in the database by season and status" -ForegroundCol
 # SQL goes in through stdin: Windows PowerShell 5.1 strips double quotes inside native-command arguments.
 $sql = "SELECT s.code, m.status, count(*) FROM match m JOIN competition c ON c.id = m.competition_id JOIN season s ON s.id = c.season_id GROUP BY 1, 2 ORDER BY 1, 2;"
 $sql | docker compose exec -T postgres sh -c 'psql -U $POSTGRES_USER -d service -At'
+
+Write-Host "`n== 6. Articles and search" -ForegroundColor Cyan
+"SELECT 'articles in DB', count(*) FROM article;" | docker compose exec -T postgres sh -c 'psql -U $POSTGRES_USER -d service -At'
+foreach ($i in "articles", "entities") {
+    try { Write-Host ("Elasticsearch {0}: {1}" -f $i, (Invoke-RestMethod "http://localhost:9200/$i/_count").count) }
+    catch { Write-Host "Elasticsearch $i not reachable yet" -ForegroundColor Yellow }
+}
+
+Write-Host "`n== 7. Live games" -ForegroundColor Cyan
+docker compose logs --tail 3 live-collector
+"SELECT m.status, count(*) FROM match m WHERE m.scheduled_at::date = current_date GROUP BY 1;" | docker compose exec -T postgres sh -c 'psql -U $POSTGRES_USER -d service -At'
+try {
+    $live = (Invoke-RestMethod http://localhost:8000/api/live).results
+    Write-Host ("followed now: {0}" -f (($live | ForEach-Object { "$($_.match.key) $($_.state.mode) $($_.state.status)" }) -join ", "))
+} catch { Write-Host "live API not reachable yet" -ForegroundColor Yellow }
 
 if ($Backfill) {
     $state = (docker compose exec -T airflow airflow dags list-runs kovo_backfill -o plain 2>$null | Select-Object -Skip 1 -First 1)

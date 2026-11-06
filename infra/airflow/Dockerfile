@@ -10,13 +10,15 @@ ENV JAVA_HOME=/opt/java/openjdk \
     HADOOP_CONF_DIR=/opt/hadoop-conf \
     YARN_CONF_DIR=/opt/hadoop-conf \
     PYSPARK_PYTHON=/usr/local/bin/python3
-COPY --chown=airflow:root requirements.txt /requirements.txt
+COPY --chown=airflow:root requirements.txt requirements-ml.txt /
 USER airflow
 RUN pip install --no-cache-dir "apache-airflow==3.0.6" -r /requirements.txt
+# ML client libraries in a separate step (see requirements-ml.txt)
+RUN pip install --no-cache-dir -r /requirements-ml.txt
 
-# PostgreSQL JDBC driver for Spark jobs that write to the serving DB (spark-submit --jars).
+# PostgreSQL JDBC driver (serving DB) and elasticsearch-hadoop (index_entities.py) for spark-submit --jars.
 USER root
 RUN mkdir -p /opt/spark-jars \
  && curl -fsSL -o /opt/spark-jars/postgresql.jar \
-      https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.5/postgresql-42.7.5.jar
+      https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.5/postgresql-42.7.5.jar  && curl -fsSL -o /opt/spark-jars/elasticsearch-spark.jar       https://repo1.maven.org/maven2/org/elasticsearch/elasticsearch-spark-30_2.12/8.17.4/elasticsearch-spark-30_2.12-8.17.4.jar
 USER airflow

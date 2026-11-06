@@ -11,7 +11,8 @@ const rel = (r) => {
   const d = ((r.a - r.b) / Math.abs(r.b)) * 100
   return r.lowerIsBetter ? -d : d // positive = better
 }
-const width = (r, scale) => `${Math.min(50, (Math.abs(rel(r) ?? 0) / scale) * 50)}%`
+// the bar fills at most the half-track minus room for the percentage label at its end
+const width = (r, scale) => `calc((50% - 40px) * ${Math.min(1, Math.abs(rel(r) ?? 0) / scale)})`
 const show = (r, v) => (v == null ? '-' : r.fmt ? r.fmt(v) : v)
 const sign = (v) => (v > 0 ? '+' : '')
 </script>

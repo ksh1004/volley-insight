@@ -3,7 +3,7 @@ export const GENDERS = { M: '남자부', F: '여자부' }
 
 export const POSITIONS = { OH: '아웃사이드 히터', OP: '아포짓', MB: '미들 블로커', S: '세터', L: '리베로' }
 
-export const STATUS = { SCHEDULED: '예정', LIVE: '진행 중', FINISHED: '종료', CONFIRMED: '종료' }
+export const STATUS = { SCHEDULED: '예정', LIVE: '진행 중', FINISHED: '종료', CONFIRMED: '종료', CANCELLED: '미진행' }
 
 export const ACTIONS = {
   DF: '디그', RR: '리시브', SS: '세트', VV: '서브', VS: '스파이크 서브',
@@ -26,3 +26,7 @@ export const ATTACK_TYPES = { OPEN: '오픈', QUICK_OPEN: '퀵오픈', QUICK: '�
 
 // Events that are not part of a rally (shown as small notes in the play-by-play)
 export const NON_PLAY = new Set(['CO', 'CI', 'CT', 'CW', 'CY', 'CR', 'CC', 'ST', 'ET'])
+
+// Live pages (Flink live-metrics)
+export const LIVE_MODES = { LIVE: '실시간', REPLAY: '재생' }
+export const POINT_KINDS = { ATTACK: '공격', BLOCK: '블로킹', ACE: '서브 에이스', OPP_ERROR: '상대 범실', OTHER: '득점' }

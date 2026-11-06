@@ -55,9 +55,15 @@ ON CONFLICT (competition_id, game_no) DO UPDATE SET
   round = EXCLUDED.round, gender = EXCLUDED.gender, home_team_id = EXCLUDED.home_team_id,
   away_team_id = EXCLUDED.away_team_id, scheduled_at = EXCLUDED.scheduled_at, venue = EXCLUDED.venue,
   city = EXCLUDED.city, broadcasters = EXCLUDED.broadcasters,
-  -- the live pipeline sets LIVE; a batch run during the game must not reset it to SCHEDULED
-  status = CASE WHEN match.status = 'LIVE' AND EXCLUDED.status = 'SCHEDULED' THEN match.status ELSE EXCLUDED.status END,
-  home_sets = EXCLUDED.home_sets, away_sets = EXCLUDED.away_sets, duration_min = EXCLUDED.duration_min,
+  -- the live pipeline (Flink live-metrics) sets LIVE, then FINISHED with the set count; a batch run before KOVO's
+  -- schedule has the result must not reset that to SCHEDULED 0:0
+  status = CASE WHEN match.status IN ('LIVE', 'FINISHED') AND EXCLUDED.status = 'SCHEDULED' THEN match.status
+                ELSE EXCLUDED.status END,
+  home_sets = CASE WHEN match.status IN ('LIVE', 'FINISHED') AND EXCLUDED.status = 'SCHEDULED' THEN match.home_sets
+                   ELSE EXCLUDED.home_sets END,
+  away_sets = CASE WHEN match.status IN ('LIVE', 'FINISHED') AND EXCLUDED.status = 'SCHEDULED' THEN match.away_sets
+                   ELSE EXCLUDED.away_sets END,
+  duration_min = EXCLUDED.duration_min,
   spectators = EXCLUDED.spectators, referee_main = EXCLUDED.referee_main, referee_sub = EXCLUDED.referee_sub,
   updated_at = now();
 
@@ -175,6 +181,36 @@ UPDATE team SET is_active = team.id IN (
   FROM match m JOIN competition c ON c.id = m.competition_id JOIN season s ON s.id = c.season_id
   WHERE s.code = (SELECT max(s2.code) FROM season s2 JOIN competition c2 ON c2.season_id = s2.id
                   JOIN match m2 ON m2.competition_id = c2.id));
+
+-- a player's position = the one in their latest box score (play-by-play-only rows have none, and old seasons'
+-- codes are already mapped by curate_kovo.py), so a retired player is not left with a code from an old row
+UPDATE player p SET position = latest.position, updated_at = now()
+FROM (SELECT DISTINCT ON (pms.player_id) pms.player_id, pms.position
+      FROM player_match_stat pms JOIN match m ON m.id = pms.match_id
+      WHERE pms.position <> '' AND pms.player_id IN (SELECT p2.id FROM player p2 JOIN staging.player sp ON sp.code = p2.code)
+      ORDER BY pms.player_id, m.scheduled_at DESC) latest
+WHERE p.id = latest.player_id AND p.position IS DISTINCT FROM latest.position
+  AND NOT EXISTS (SELECT 1 FROM data_correction dc   -- an admin's position correction (ADM-03) wins
+                  WHERE dc.is_active AND dc.target = 'player' AND dc.key = p.code AND dc.field = 'position');
+
+-- ---------------------------------------------------------------- quality issues (PIPE-10)
+-- Upsert what this run found for its seasons. Issues of those seasons that it no longer finds become RESOLVED.
+-- An admin's ACKNOWLEDGED status (e.g. a gap in KOVO's own data) is kept while the issue is still there.
+INSERT INTO quality_issue (season_code, game_no, match_id, set_no, rule, subject, detail, severity, status, note,
+                           first_seen_at, last_seen_at)
+SELECT q.season_code, q.game_no, sm.match_id, q.set_no, q.rule, q.subject, q.detail, q.severity, 'OPEN', '',
+       now(), now()
+FROM staging.quality_issue q LEFT JOIN staged_match sm USING (season_code, game_no)
+ON CONFLICT (season_code, game_no, set_no, rule, subject) DO UPDATE SET
+  match_id = EXCLUDED.match_id, detail = EXCLUDED.detail, severity = EXCLUDED.severity, last_seen_at = now(),
+  status = CASE WHEN quality_issue.status = 'RESOLVED' THEN 'OPEN' ELSE quality_issue.status END,
+  resolved_at = NULL;
+
+UPDATE quality_issue qi SET status = 'RESOLVED', resolved_at = now()
+WHERE qi.status <> 'RESOLVED' AND qi.season_code IN (SELECT code FROM staging.season)
+  AND NOT EXISTS (SELECT 1 FROM staging.quality_issue q
+                  WHERE q.season_code = qi.season_code AND q.game_no = qi.game_no AND q.set_no = qi.set_no
+                    AND q.rule = qi.rule AND q.subject = qi.subject);
 
 -- ---------------------------------------------------------------- summary (printed by the Spark driver)
 SELECT sm.season_code, m.status, count(*) AS matches,

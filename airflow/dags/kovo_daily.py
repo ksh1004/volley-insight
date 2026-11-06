@@ -7,16 +7,24 @@
   4. wait until raw-archiver has written every message to HDFS /raw/
   5. Spark curation of the season
   6. analysis marts: Elo ratings, team/player season summaries (all seasons)
-Not yet: standings and player profiles (needs new collectors), Elasticsearch `entities`.
+  7. Elasticsearch `entities` (team/player search and autocomplete), rebuilt from the curated data
+  8. player types (K-means) and similar players, all seasons (ANL-06): player_type, player_style
+  9. quality gate (PIPE-10): fails when a game of the last 7 days has an OPEN error issue (e.g. missing
+     play-by-play after re-collection) or a regular-season game has no result 6 hours after its start.
+     Known gaps in KOVO's own data are acknowledged in Django admin and no longer fail the run.
+Seasons with a match-level correction (ADM-03) changed in the last day are curated again with the current one.
+Not yet: standings and player profiles (needs new collectors).
 """
 from datetime import timedelta
 
 import pendulum
+from airflow.exceptions import AirflowFailException
 from airflow.sdk import dag, task
 
+from kovo_tasks import alerts
 from kovo_tasks import pipeline as p
 
-DEFAULT_ARGS = {"retries": 3, "retry_delay": timedelta(minutes=5)}
+DEFAULT_ARGS = alerts.default_args()
 CATCH_UP_DAYS = 7
 
 
@@ -27,6 +35,7 @@ CATCH_UP_DAYS = 7
     catchup=False,
     max_active_runs=1,
     default_args=DEFAULT_ARGS,
+    on_failure_callback=alerts.on_dag_failure,
     tags=["kovo", "collect"],
     doc_md=__doc__,
 )
@@ -47,11 +56,33 @@ def kovo_daily():
 
     @task
     def curate(result: dict):
-        p.run_curation([result["season"]])
+        corrected = p.corrected_seasons(p.now_kst() - timedelta(days=1))
+        if corrected:
+            print("seasons with new corrections:", ", ".join(corrected))
+        p.run_curation([result["season"], *corrected])
 
     @task
     def build_marts():
         p.run_marts()
+
+    @task
+    def index_entities():
+        p.run_index_entities()
+
+    @task
+    def player_types():
+        p.run_player_types()
+
+    @task(retries=0)
+    def quality_gate():
+        now = p.now_kst()
+        report = p.quality_report(now - timedelta(days=CATCH_UP_DAYS), now)
+        print("open issues of all seasons:", report["open"] or "none")
+        problems = p.gate_problems(report)
+        if problems:
+            raise AirflowFailException("data quality: " + "; ".join(problems)
+                                       + " (fix, or acknowledge a source gap in Django admin > 품질 검사 결과)")
+        print(f"quality gate passed: no open error in the last {CATCH_UP_DAYS} days")
 
     @task
     def report(result: dict):
@@ -62,7 +93,12 @@ def kovo_daily():
         print("collected:", ", ".join(result["games"]) or "none")
 
     result = collect()
-    wait_for_raw(result) >> curate(result) >> build_marts() >> report(result)
+    marts = build_marts()
+    curated = curate(result)
+    wait_for_raw(result) >> curated >> marts >> report(result)
+    curated >> quality_gate()
+    marts >> index_entities()
+    marts >> player_types()
 
 
 kovo_daily()

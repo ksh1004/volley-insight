@@ -1,0 +1,31 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "analysis": {
+      "tokenizer": {
+        "bigram": {"type": "ngram", "min_gram": 2, "max_gram": 2, "token_chars": ["letter", "digit"]}
+      },
+      "analyzer": {
+        "bigram": {"type": "custom", "tokenizer": "bigram", "filter": ["cjk_width", "lowercase"]}
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "type": {"type": "keyword"},
+      "code": {"type": "keyword"},
+      "name": {"type": "keyword"},
+      "suggest": {"type": "search_as_you_type", "copy_to": "suggest_bigram"},
+      "suggest_bigram": {"type": "text", "analyzer": "bigram"},
+      "team_code": {"type": "keyword"},
+      "team_name": {"type": "keyword"},
+      "gender": {"type": "keyword"},
+      "position": {"type": "keyword"},
+      "active": {"type": "boolean"},
+      "weight": {"type": "integer"},
+      "last_seen_on": {"type": "date"}
+    }
+  }
+}

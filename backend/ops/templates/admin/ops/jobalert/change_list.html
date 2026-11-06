@@ -1,0 +1,131 @@
+{% extends "admin/change_list.html" %}
+{% comment %}ADM-01 수집 현황: Airflow jobs, collector runs (COL-08) and, below, the job failures (PIPE-09).{% endcomment %}
+
+{% block extrastyle %}{{ block.super }}
+<style>
+  .jobs { margin: 0 0 24px; }
+  .jobs table { width: 100%; }
+  .jobs td, .jobs th { vertical-align: middle; }
+  .jobs td.num, .jobs th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .jobs .quiet, .jobs .help { color: var(--body-quiet-color); }
+  .jobs .help { margin: 6px 0 0; }
+  .jobs .dots { display: inline-flex; gap: 3px; align-items: center; }
+  .jobs .dot { width: 10px; height: 10px; border-radius: 50%; background: #9aa0a6; display: inline-block; }
+  .jobs .dot.success { background: #2e7d32; }
+  .jobs .dot.failed { background: #c62828; }
+  .jobs .dot.running, .jobs .dot.queued { background: #1565c0; }
+  .jobs .state { font-weight: 700; }
+  .jobs .state.failed, .jobs .bad { color: #c62828; }
+  .jobs .state.success { color: #2e7d32; }
+  .jobs .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 700;
+               border: 1px solid var(--hairline-color); }
+  .jobs .err { max-width: 520px; overflow-wrap: anywhere; }
+  .jobs .summary { display: flex; gap: 16px; flex-wrap: wrap; margin: 0 0 12px; }
+  .jobs .summary a { font-weight: 700; }
+  @media (prefers-reduced-motion: no-preference) { .jobs .dot.running { animation: pulse 1.6s ease-in-out infinite; } }
+  @keyframes pulse { 50% { opacity: .35; } }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="jobs">
+  <div class="summary">
+    {% if open_alerts %}
+      <p class="errornote" role="alert">확인하지 않은 작업 실패가 {{ open_alerts }}건 있습니다. 아래 목록에서 원인을 보고
+        '확인함으로 표시'하세요.</p>
+    {% else %}
+      <p>확인하지 않은 작업 실패가 없습니다.</p>
+    {% endif %}
+    <p><a href="{{ airflow_ui }}" target="_blank" rel="noopener">Airflow 열기</a> ·
+       <a href="{% url 'admin:ops_manualrun_changelist' %}">수동 실행</a></p>
+  </div>
+  {% if webhook_missing %}<p class="help">{{ webhook_hint }}</p>{% endif %}
+
+  <div class="module">
+    <h2>Airflow 작업</h2>
+    {% if airflow_error %}
+      <p class="errornote">Airflow를 읽지 못했습니다: {{ airflow_error }}</p>
+    {% else %}
+    <table>
+      <caption class="quiet" style="caption-side: bottom; text-align: left; padding-top: 6px;">
+        최근 실행: 왼쪽이 오래된 것, 오른쪽이 최근 (초록 성공 · 빨강 실패 · 파랑 실행 중). 점에 마우스를 올리면 시각이 보입니다.
+      </caption>
+      <thead><tr>
+        <th scope="col">작업</th><th scope="col">하는 일</th><th scope="col">일정</th>
+        <th scope="col">최근 {{ dags.0.runs|length|default:"" }}회</th><th scope="col">마지막 실행</th>
+        <th scope="col" class="num">7일 실패</th>
+      </tr></thead>
+      <tbody>
+      {% for d in dags %}
+        <tr>
+          <td><a href="{{ d.url }}" target="_blank" rel="noopener"><b>{{ d.label }}</b></a><br>
+              <span class="quiet">{{ d.dag_id }}</span>
+              {% if d.paused %}<br><span class="tag bad">일시 중지</span>{% endif %}
+              {% if d.import_errors %}<br><span class="tag bad">DAG 오류</span>{% endif %}</td>
+          <td>{{ d.what }}</td>
+          <td>{% if d.missing %}<span class="bad">Airflow에 없음</span>
+              {% else %}{{ d.schedule|default:"-" }}
+              {% if d.next_run %}<br><span class="quiet">다음 {{ d.next_run|date:"m-d H:i" }}</span>{% endif %}{% endif %}</td>
+          <td><span class="dots">{% for r in d.dots %}<a class="dot {{ r.state }}" href="{{ r.url }}" target="_blank" rel="noopener"
+                 title="{{ r.run_after|date:'m-d H:i' }} {{ r.state_label }}{% if r.run_type == 'manual' %} (수동){% endif %}"
+                 aria-label="{{ r.run_after|date:'m-d H:i' }} {{ r.state_label }}"></a>{% empty %}<span class="quiet">실행 없음</span>{% endfor %}</span></td>
+          <td>{% if d.last %}<span class="state {{ d.last.state }}">{{ d.last.state_label }}</span>
+                {{ d.last.run_after|date:"m-d H:i" }}{% if d.last.minutes is not None %} · {{ d.last.minutes }}분{% endif %}
+              {% else %}-{% endif %}</td>
+          <td class="num">{% if d.failed_7d %}<span class="bad">{{ d.failed_7d }}</span>{% else %}0{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+
+  <div class="module">
+    <h2>수집기 실행 결과 (최근 {{ collection.days|default:7 }}일)</h2>
+    {% if collection_error %}
+      <p class="errornote">Elasticsearch에서 수집 기록을 읽지 못했습니다 (search 프로필이 꺼져 있나요?): {{ collection_error }}</p>
+    {% elif collection %}
+    <table>
+      <thead><tr>
+        <th scope="col">수집기</th><th scope="col" class="num">성공</th><th scope="col" class="num">실패</th>
+        <th scope="col" class="num">끝나지 않음</th><th scope="col" class="num">보낸 메시지</th>
+        <th scope="col">마지막 실행</th><th scope="col">마지막 실패</th>
+      </tr></thead>
+      <tbody>
+      {% for j in collection.jobs %}
+        <tr>
+          <td><b>{{ j.job }}</b></td>
+          <td class="num">{{ j.success }}</td>
+          <td class="num">{% if j.failed %}<span class="bad">{{ j.failed }}</span>{% else %}0{% endif %}</td>
+          <td class="num">{% if j.stuck %}<span class="bad">{{ j.stuck }}</span>{% else %}0{% endif %}</td>
+          <td class="num">{{ j.records }}</td>
+          <td>{% if j.last %}{{ j.last.finished|date:"m-d H:i" }} · {{ j.last.count|default:0 }}건
+              <br><span class="quiet">{{ j.last.target|truncatechars:60 }}</span>{% else %}-{% endif %}</td>
+          <td>{% if j.last_failure %}{{ j.last_failure.finished|date:"m-d H:i" }}{% else %}<span class="quiet">없음</span>{% endif %}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="7">이 기간에 수집 기록이 없습니다.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="help">수집기는 실행마다 시작과 결과를 Kafka <code>ops.collection-log</code>에 남깁니다(Kibana "수집 기록"과 같은 자료).
+      '끝나지 않음'은 시작만 있고 3시간 넘게 결과가 없는 실행으로, 프로세스가 중간에 멈춘 경우입니다.</p>
+    {% if collection.failures %}
+      <h3 style="margin-top: 12px;">실패하거나 끝나지 않은 수집</h3>
+      <table>
+        <thead><tr><th scope="col">시작</th><th scope="col">수집기</th><th scope="col">대상</th><th scope="col">오류</th></tr></thead>
+        <tbody>
+        {% for f in collection.failures %}
+          <tr><td>{{ f.started|date:"m-d H:i" }}</td><td>{{ f.job }}</td><td>{{ f.target|truncatechars:60 }}</td>
+              <td class="err">{% if f.status == "RUNNING" %}<span class="quiet">결과 없음 (중간에 멈춤)</span>{% else %}{{ f.error|default:"-"|truncatechars:300 }}{% endif %}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+    {% endif %}
+  </div>
+</div>
+<h2>작업 실패 내역</h2>
+<p class="help" style="color: var(--body-quiet-color);">재시도를 모두 쓰고도 실패한 단계입니다. 같은 단계가 6시간 안에 또 실패하면 기록만 하고 메신저로는 다시 보내지 않습니다.</p>
+{{ block.super }}
+{% endblock %}

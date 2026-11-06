@@ -1,9 +1,9 @@
 # Development stack (design.md 1.5). Docker Desktop has ~16 GB here, so services are grouped:
 #   (no profile)     core: postgres, kafka, kafka-init       -> always started
-#   --profile app    django-api, frontend
+#   --profile app    django-api, django-sse, frontend
 #   --profile batch  hadoop (hdfs + yarn), airflow, mlflow
-#   --profile stream hdfs + flink
-#   --profile search elasticsearch, kibana, filebeat
+#   --profile stream hdfs + flink (+ live-collector)
+#   --profile search elasticsearch, kibana, filebeat, metricbeat (+ kibana-setup, runs once)
 # Example: docker compose --profile app up -d
 # All ports are bound to 127.0.0.1 only (NFR-34).
 
@@ -33,6 +33,16 @@ services:
       interval: 5s
       retries: 20
     mem_limit: 1g
+
+  # The KOVO 1 req/s budget (NFR-01) is a lock file shared by every container that calls KOVO (airflow,
+  # live-collector). New named volumes are owned by root; the airflow image runs as uid 50000.
+  kovo-rate-perms:
+    image: volley/airflow:3.0.6
+    user: "0:0"
+    entrypoint: ["sh", "-c", "chown 50000:0 /run/kovo && chmod 775 /run/kovo"]
+    volumes:
+      - kovo-rate:/run/kovo
+    restart: "no"
 
   # New named volumes are owned by root; the kafka image runs as appuser (uid 1000).
   kafka-volume-perms:
@@ -102,6 +112,26 @@ services:
       postgres: { condition: service_healthy }
     mem_limit: 768m
 
+  # SSE gateway (design.md 1.5): GET /api/live/{match}/stream, fed by Kafka live.metrics. Same code as django-api,
+  # served by Uvicorn (ASGI) so one process can hold many open streams. The frontend proxies only that path here.
+  django-sse:
+    profiles: [app]
+    image: volley/backend:dev
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,django-sse
+    command: uvicorn config.asgi:application --host 0.0.0.0 --port 8001 --timeout-graceful-shutdown 3
+    volumes:
+      - ./backend:/app
+    ports: ["127.0.0.1:8001:8001"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    mem_limit: 384m
+
   frontend:
     profiles: [app]
     image: node:22-alpine
@@ -110,12 +140,13 @@ services:
     command: sh -c "npm ci && npm run dev -- --host 0.0.0.0"
     environment:
       VITE_API_PROXY: http://django-api:8000
+      VITE_SSE_PROXY: http://django-sse:8001
       VITE_USE_POLLING: "true"
     volumes:
       - ./frontend:/app
       - frontend-node-modules:/app/node_modules
     ports: ["127.0.0.1:5173:5173"]
-    depends_on: [django-api]
+    depends_on: [django-api, django-sse]
     mem_limit: 768m
 
   # ---------------- batch / stream: hadoop ----------------
@@ -170,6 +201,9 @@ services:
     command: standalone
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      # LocalExecutor keeps one process per parallel slot (default 32, ~150 MB each). Our DAGs need a few at once;
+      # 32 idle workers left too little of the 4 GB for a Spark driver (curation was OOM-killed on 2026-11-05).
+      AIRFLOW__CORE__PARALLELISM: "6"
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${AIRFLOW_DB}
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Seoul
@@ -178,9 +212,16 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       MLFLOW_TRACKING_URI: http://mlflow:5000
       PYTHONPATH: /opt/airflow/collectors
-      # every KOVO request from any task process shares one 1 req/s budget (NFR-01)
-      KOVO_RATE_LOCK_FILE: /tmp/kovo-rate.lock
+      # every KOVO request from any task process (and live-collector) shares one 1 req/s budget (NFR-01)
+      KOVO_RATE_LOCK_FILE: /run/kovo/rate.lock
       WEBHDFS_URL: http://namenode:9870/webhdfs/v1
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
+      NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
+      # PIPE-09: a task that failed for good is stored in job_alert and, when set, posted to this incoming webhook
+      # (Mattermost, Slack or Discord). The message links to the task log on this PC's Airflow.
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      AIRFLOW_UI_URL: http://localhost:8080
       # serving DB, used by Spark jobs (driver runs here in client mode) to load curated tables
       POSTGRES_HOST: postgres
       POSTGRES_USER: ${POSTGRES_USER}
@@ -192,8 +233,10 @@ services:
       - ./collectors:/opt/airflow/collectors
       - ./infra/hadoop/conf:/opt/hadoop-conf:ro
       - airflow-logs:/opt/airflow/logs
+      - kovo-rate:/run/kovo
     ports: ["127.0.0.1:8080:8080"]
     depends_on:
+      kovo-rate-perms: { condition: service_completed_successfully }
       postgres: { condition: service_healthy }
       kafka: { condition: service_healthy }
       resourcemanager: { condition: service_started }
@@ -235,6 +278,12 @@ services:
         taskmanager.memory.process.size: 2048m
         execution.checkpointing.interval: 30s
         state.checkpoints.dir: hdfs://namenode:9000/flink/checkpoints
+      # article-enricher and live-metrics write to the serving DB (+ Elasticsearch for articles)
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SERVICE_DB: ${SERVICE_DB}
+      ELASTICSEARCH_URL: http://elasticsearch:9200
     volumes:
       - ./flink_jobs:/opt/flink/usrlib/jobs
     ports: ["127.0.0.1:8081:8081"]
@@ -253,14 +302,18 @@ services:
     depends_on: [flink-jobmanager, datanode]
     mem_limit: 2300m
 
-  # Keeps raw-archiver submitted: after a PC/Docker restart the job manager comes back empty, so this
-  # re-submits the job (from its committed Kafka offsets). Checks every minute; never submits a second copy.
+  # Keeps raw-archiver, article-enricher and live-metrics submitted: after a PC/Docker restart the job manager comes back
+  # empty, so this re-submits each job from its newest checkpoint. Checks every minute; never submits a second copy.
   flink-job-keeper:
     profiles: [stream]
     image: volley/flink:1.20.1
     restart: unless-stopped
     command: >
-      sh -c "while true; do sh /opt/flink/usrlib/jobs/submit.sh raw_archiver.py raw-archiver; sleep 60; done"
+      sh -c "while true; do
+               sh /opt/flink/usrlib/jobs/submit.sh raw_archiver.py raw-archiver;
+               sh /opt/flink/usrlib/jobs/submit.sh article_enricher.py article-enricher;
+               sh /opt/flink/usrlib/jobs/submit.sh live_metrics.py live-metrics;
+               sleep 60; done"
     environment:
       <<: *flink-env
       FLINK_JOBMANAGER: flink-jobmanager:8081
@@ -268,6 +321,30 @@ services:
       - ./flink_jobs:/opt/flink/usrlib/jobs
     depends_on: [flink-jobmanager, flink-taskmanager]
     mem_limit: 512m
+
+  # Follows today's games: new play-by-play events every 15 s -> kovo.live -> Flink live-metrics (COL-06)
+  live-collector:
+    profiles: [stream]
+    image: volley/airflow:3.0.6
+    restart: unless-stopped
+    entrypoint: ["python", "-m", "collectors", "live", "--every", "15"]
+    working_dir: /opt/airflow/collectors
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      PYTHONPATH: /opt/airflow/collectors
+      KOVO_RATE_LOCK_FILE: /run/kovo/rate.lock
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SERVICE_DB: ${SERVICE_DB}
+    volumes:
+      - ./collectors:/opt/airflow/collectors:ro
+      - kovo-rate:/run/kovo
+    depends_on:
+      kovo-rate-perms: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    mem_limit: 256m
 
   # ---------------- search ----------------
   elasticsearch:
@@ -296,6 +373,10 @@ services:
     ports: ["127.0.0.1:5601:5601"]
     depends_on:
       elasticsearch: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5601/api/status | grep -q '\"level\":\"available\"'"]
+      interval: 15s
+      retries: 40
     mem_limit: 1g
 
   filebeat:
@@ -314,6 +395,53 @@ services:
       elasticsearch: { condition: service_healthy }
     mem_limit: 256m
 
+  metricbeat:
+    profiles: [search]
+    image: elastic/metricbeat:8.17.4
+    restart: unless-stopped
+    user: root
+    command: ["metricbeat", "-e", "--strict.perms=false"]
+    environment:
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      AIRFLOW_DB: ${AIRFLOW_DB}
+      SERVICE_DB: ${SERVICE_DB}
+    volumes:
+      - ./infra/metricbeat/metricbeat.yml:/usr/share/metricbeat/metricbeat.yml:ro
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+    mem_limit: 256m
+
+  # Consumer lag of every Kafka group -> Elasticsearch metrics-volley, every 30 s (collectors/kafka_lag.py)
+  kafka-lag:
+    profiles: [search]
+    image: volley/airflow:3.0.6
+    restart: unless-stopped
+    entrypoint: ["python", "-m", "collectors", "kafka-lag", "--every", "30"]
+    working_dir: /opt/airflow/collectors
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      PYTHONPATH: /opt/airflow/collectors
+    volumes:
+      - ./collectors:/opt/airflow/collectors:ro
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    mem_limit: 256m
+
+  # Loads the Kibana data views and the operations dashboard (infra/kibana/dashboard.ndjson), then exits.
+  kibana-setup:
+    profiles: [search]
+    image: curlimages/curl:8.11.1
+    restart: "no"
+    entrypoint: ["sh", "/setup/setup.sh"]
+    volumes:
+      - ./infra/kibana:/setup:ro
+    depends_on:
+      kibana: { condition: service_healthy }
+
 volumes:
   pg-data:
   kafka-data:
@@ -322,4 +450,5 @@ volumes:
   airflow-logs:
   mlflow-artifacts:
   es-data:
+  kovo-rate:
   frontend-node-modules:

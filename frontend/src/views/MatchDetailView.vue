@@ -4,6 +4,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { getMatch, getRallies } from '@/api/client'
 import AsyncState from '@/components/AsyncState.vue'
 import CompareBars from '@/components/CompareBars.vue'
+import MatchPreview from '@/components/MatchPreview.vue'
 import ScoreFlow from '@/components/ScoreFlow.vue'
 import SortableTable from '@/components/SortableTable.vue'
 import { ACTIONS, GENDERS, NON_PLAY, POSITIONS, RESULTS, STATUS } from '@/constants/volley'
@@ -26,6 +27,9 @@ const subtitle = computed(() => {
   const round = m.league_code === '201' ? ` ${m.round}라운드` : ''
   return `${m.season_years} 시즌 ${GENDERS[m.gender]} · ${m.competition}${round} · ${fmtFullDate(m.scheduled_at)} ${fmtTime(m.scheduled_at)}`
 })
+// PIPE-10: "3·4세트 문자중계 없음" for each unresolved data problem of this match
+const notes = computed(() => (match.value?.data_notes?.issues || [])
+  .map((i) => (i.sets.length ? `${i.sets.join('·')}세트 ${i.label}` : i.label)))
 const totals = computed(() => match.value?.set_details.reduce((acc, s) => [acc[0] + s.home_points, acc[1] + s.away_points], [0, 0]))
 
 const compareRows = computed(() => {
@@ -144,13 +148,27 @@ watch(setNo, loadRallies)
             </tbody>
           </table>
         </div>
+        <p v-if="match.live || match.status === 'LIVE'" class="live-link">
+          <RouterLink :to="`/matches/${match.key}/live`">
+            {{ match.live?.mode === 'REPLAY' ? '재생 화면 보기' : match.status === 'LIVE' ? '실시간 중계 보기' : '실시간 기록 보기' }} →
+          </RouterLink>
+        </p>
         <ul class="facts small muted">
           <li>장소 {{ match.venue || '-' }}</li>
           <li v-if="match.spectators != null">관중 {{ num(match.spectators) }}명</li>
           <li v-if="match.referee_main">주심 {{ match.referee_main }}<span v-if="match.referee_sub"> · 부심 {{ match.referee_sub }}</span></li>
           <li v-if="match.broadcasters">중계 {{ match.broadcasters.replaceAll(',', ', ') }}</li>
         </ul>
+        <div v-if="notes.length || match.data_notes?.corrected" class="data-note small" role="note">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 7.5v.5" /></svg>
+          <div>
+            <p v-if="notes.length">KOVO 공식 기록에 빠지거나 맞지 않는 부분이 있습니다: {{ notes.join(', ') }}. 원본을 그대로 보여 드립니다.</p>
+            <p v-if="match.data_notes?.corrected">이 경기 기록 중 {{ match.data_notes.corrected }}개 항목은 관리자가 근거를 확인해 고쳤습니다.</p>
+          </div>
+        </div>
       </section>
+
+      <MatchPreview v-if="!done || match.preview?.prediction" :match="match" />
 
       <template v-if="done">
         <section class="card" v-if="compareRows.length">
@@ -215,6 +233,7 @@ watch(setNo, loadRallies)
 
 <style scoped>
 .center { text-align: center; }
+.live-link { text-align: center; margin: 8px 0 0; font-weight: 700; }
 .no { margin-left: 4px; }
 .board { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px; margin: 16px 0; }
 .board-team { font-size: 1.35rem; font-weight: 800; color: var(--color-foreground); display: flex; flex-direction: column; align-items: center; }
@@ -225,6 +244,11 @@ watch(setNo, loadRallies)
 .board-score.status { font-size: 1rem; }
 .sets td, .sets th { text-align: center; }
 .facts { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-wrap: wrap; gap: 4px 16px; justify-content: center; }
+.data-note { display: flex; gap: 8px; align-items: flex-start; margin: 12px auto 0; max-width: 640px; padding: 8px 12px;
+             border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-muted); color: var(--color-muted-foreground); }
+.data-note p { margin: 0; }
+.data-note p + p { margin-top: 2px; }
+.data-note svg { flex: none; width: 16px; height: 16px; margin-top: 2px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .pbp { margin-top: 12px; }
 .pbp summary { cursor: pointer; font-weight: 600; color: var(--color-primary); }
 .rallies { list-style: none; padding: 0; margin: 8px 0 0; max-height: 520px; overflow-y: auto; border-top: 1px solid var(--color-border-soft); }

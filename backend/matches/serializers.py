@@ -21,11 +21,12 @@ class MatchListSerializer(serializers.ModelSerializer):
     home = serializers.SerializerMethodField()
     away = serializers.SerializerMethodField()
     sets = serializers.SerializerMethodField()
+    prediction = serializers.SerializerMethodField()
 
     class Meta:
         model = Match
         fields = ["key", "season", "season_years", "league_code", "competition", "round", "gender", "scheduled_at", "venue",
-                  "broadcasters", "status", "home", "away", "home_sets", "away_sets", "sets"]
+                  "broadcasters", "status", "home", "away", "home_sets", "away_sets", "sets", "prediction"]
 
     def get_key(self, m):
         return match_key(m)
@@ -35,6 +36,14 @@ class MatchListSerializer(serializers.ModelSerializer):
 
     def get_away(self, m):
         return team_ref(m.away_team)
+
+    def get_prediction(self, m):
+        """Latest pre-match prediction (prefetched in base_matches)."""
+        p = next(iter(m.predictions.all()), None)
+        if not p:
+            return None
+        return {"home_win_prob": float(p.home_win_prob), "pred_sets": [p.pred_home_sets, p.pred_away_sets],
+                "is_correct": p.is_correct}
 
     def get_sets(self, m):
         return [[s.home_points, s.away_points] for s in m.sets.all()]

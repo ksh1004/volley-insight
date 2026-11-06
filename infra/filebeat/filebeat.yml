@@ -1,4 +1,6 @@
-# Ships every container's stdout/stderr to Elasticsearch (NFR-23).
+# Ships logs to Elasticsearch for the Kibana operations dashboard (NFR-23, ADM-04).
+#   container stdout/stderr          -> logs-volley-YYYY.MM.DD
+#   Kafka ops.collection-log (COL-08) -> ops-collection-YYYY.MM   one document per collector run start/finish
 filebeat.inputs:
   - type: filestream
     id: docker-containers
@@ -9,13 +11,62 @@ filebeat.inputs:
     processors:
       - add_docker_metadata:
           host: "unix:///var/run/docker.sock"
+      # compose service name as a short field for dashboards
+      - copy_fields:
+          fields:
+            - from: container.labels.com_docker_compose_service
+              to: compose_service
+          fail_on_error: false
+          ignore_missing: true
+      # a coarse level from the text, so errors can be counted across services with different log formats
+      - script:
+          lang: javascript
+          source: >
+            function process(event) {
+              var m = event.Get("message") || "";
+              var lvl = "info";
+              if (/\b(ERROR|FATAL|CRITICAL)\b|Traceback \(most recent call last\)|Exception\b/.test(m)) lvl = "error";
+              else if (/\bWARN(ING)?\b/.test(m)) lvl = "warning";
+              event.Put("log.level", lvl);
+            }
+
+  - type: kafka
+    id: ops-collection-log
+    hosts: ["kafka:9092"]
+    topics: ["ops.collection-log"]
+    group_id: filebeat-ops
+    initial_offset: oldest
+    fields: {log_type: collection}
+    fields_under_root: true
+    processors:
+      - decode_json_fields:
+          fields: [message]
+          target: collection
+      - timestamp:
+          field: collection.started_at
+          layouts: ["2006-01-02T15:04:05Z07:00"]
+          ignore_missing: true
+          ignore_failure: true
+      - timestamp:
+          field: collection.finished_at
+          layouts: ["2006-01-02T15:04:05Z07:00"]
+          ignore_missing: true
+          ignore_failure: true
+      - drop_fields:
+          fields: [message, kafka.headers]
+          ignore_missing: true
 
 output.elasticsearch:
   hosts: ["${ELASTICSEARCH_URL:http://elasticsearch:9200}"]
+  indices:
+    - index: "ops-collection-%{+yyyy.MM}"
+      when.equals:
+        log_type: collection
   index: "logs-volley-%{+yyyy.MM.dd}"
 
 setup.template.name: "logs-volley"
 setup.template.pattern: "logs-volley-*"
+setup.template.overwrite: false
 setup.ilm.enabled: false
 setup.kibana.host: "http://kibana:5601"
 logging.level: warning

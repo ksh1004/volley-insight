@@ -14,6 +14,7 @@ class Match(PipelineModel):
         LIVE = "LIVE", "진행 중"
         FINISHED = "FINISHED", "종료"          # official result exists
         CONFIRMED = "CONFIRMED", "기록 확정"    # box score + play-by-play loaded and checked
+        CANCELLED = "CANCELLED", "미진행"      # no result 2+ days after its date (series ended early, ...)
 
     competition = models.ForeignKey(Competition, on_delete=models.CASCADE, related_name="matches")
     game_no = models.PositiveIntegerField(help_text="KOVO gnum, unique within a season")

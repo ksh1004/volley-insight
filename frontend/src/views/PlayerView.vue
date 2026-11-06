@@ -4,7 +4,11 @@ import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { getPlayer } from '@/api/client'
 import AsyncState from '@/components/AsyncState.vue'
+import FavoriteButton from '@/components/FavoriteButton.vue'
 import PercentileBars from '@/components/PercentileBars.vue'
+import PlayerForm from '@/components/PlayerForm.vue'
+import PlayerStyle from '@/components/PlayerStyle.vue'
+import RelatedArticles from '@/components/RelatedArticles.vue'
 import SortableTable from '@/components/SortableTable.vue'
 import { GENDERS, POSITIONS } from '@/constants/volley'
 import { fmtDate, num, pct } from '@/utils/format'
@@ -57,11 +61,23 @@ watch(season, (v) => { if (data.value && v !== data.value.season.code) load() })
             <span v-if="data.player.height_cm"> · {{ data.player.height_cm }}cm</span>
           </p>
         </div>
+        <FavoriteButton kind="player" :code="data.player.code" :name="data.player.name" class="fav-btn" />
       </div>
 
-      <section class="card" v-if="data.profile">
-        <h2>포지션 내 위치 <span class="muted small">{{ data.season.years }} 정규리그</span></h2>
-        <PercentileBars :profile="data.profile" />
+      <div :class="{ 'grid-2': data.profile && data.form }">
+        <section class="card" v-if="data.profile">
+          <h2>포지션 내 위치 <span class="muted small">{{ data.season.years }} 정규리그</span></h2>
+          <PercentileBars :profile="data.profile" />
+        </section>
+        <section class="card" v-if="data.form">
+          <h2>최근 폼 <span class="muted small">{{ data.season.years }} 시즌</span></h2>
+          <PlayerForm :form="data.form" />
+        </section>
+      </div>
+
+      <section class="card" v-if="data.style">
+        <h2>선수 유형과 비슷한 선수 <span class="muted small">{{ data.season.years }} 정규리그</span></h2>
+        <PlayerStyle :style="data.style" :season="data.season.code" />
       </section>
 
       <section class="card">
@@ -105,12 +121,16 @@ watch(season, (v) => { if (data.value && v !== data.value.season.code) load() })
           </SortableTable>
         </AsyncState>
       </section>
+
+      <RelatedArticles :player="code" hide-empty />
     </template>
   </AsyncState>
 </template>
 
 <style scoped>
+.title-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .title-row h1 { margin-bottom: 4px; }
+.fav-btn { margin-bottom: 12px; }
 .title-row p { margin: 0 0 16px; }
 .num { font-weight: 600; }
 </style>

@@ -1,0 +1,57 @@
+<script setup>
+// A game being followed live (or replayed) on the home page: sets, current set score, serve. Links to the live page.
+import { computed } from 'vue'
+import { GENDERS, LIVE_MODES } from '@/constants/volley'
+
+const props = defineProps({ item: { type: Object, required: true } }) // { match, state } from /api/live
+const m = computed(() => props.item.match)
+const s = computed(() => props.item.state)
+const finished = computed(() => s.value.status === 'FINISHED')
+const serving = (code) => !finished.value && s.value.serving === code
+const status = computed(() => (finished.value ? '종료' : s.value.set_open ? `${s.value.current_set}세트` : '세트 사이'))
+const label = computed(() => {
+  const sets = `세트 스코어 ${s.value.home_sets} 대 ${s.value.away_sets}`
+  const pts = finished.value ? '' : `, ${status.value} ${s.value.home_points} 대 ${s.value.away_points}`
+  return `${LIVE_MODES[s.value.mode]} ${finished.value ? '종료' : '진행 중'}: ${m.value.home.name} 대 ${m.value.away.name}, ${sets}${pts}`
+})
+</script>
+
+<template>
+  <RouterLink :to="`/matches/${m.key}/live`" class="live-card" :class="{ replay: s.mode === 'REPLAY' }" :aria-label="label">
+    <div class="meta small">
+      <span class="mode" :class="s.mode === 'REPLAY' ? 'replay' : 'live'">
+        <i v-if="s.mode === 'LIVE' && !finished" class="dot" aria-hidden="true" />{{ LIVE_MODES[s.mode] }}
+      </span>
+      <span class="muted">{{ GENDERS[m.gender] }} · {{ status }}</span>
+    </div>
+    <div class="row">
+      <span class="team home"><i v-if="serving(s.home)" class="serve" title="서브" />{{ m.home.name }}</span>
+      <span class="sets"><b>{{ s.home_sets }}</b>:<b>{{ s.away_sets }}</b></span>
+      <span class="team away">{{ m.away.name }}<i v-if="serving(s.away)" class="serve" title="서브" /></span>
+    </div>
+    <div v-if="!finished" class="pts"><span class="h">{{ s.home_points }}</span> : <span class="a">{{ s.away_points }}</span></div>
+  </RouterLink>
+</template>
+
+<style scoped>
+.live-card { display: block; padding: 10px 14px; border: 1px solid var(--color-accent); border-radius: var(--radius);
+             background: var(--color-card); color: var(--color-foreground); transition: box-shadow .15s var(--ease); }
+.live-card.replay { border-color: var(--color-border); }
+.live-card:hover { text-decoration: none; box-shadow: 0 2px 8px rgb(30 64 175 / .1); }
+.meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.mode { display: inline-flex; align-items: center; gap: 5px; font-weight: 700; border-radius: 999px; padding: 0 8px; }
+.mode.live { color: var(--color-accent); background: var(--color-accent-soft); }
+.mode.replay { color: var(--color-muted-foreground); background: var(--color-muted); }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+.row { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; font-weight: 600; }
+.team { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 5px; }
+.team.home { justify-content: flex-end; color: var(--color-home); }
+.team.away { color: var(--color-away); }
+.sets { font-size: 1.2rem; font-weight: 800; font-variant-numeric: tabular-nums; display: flex; gap: 4px; }
+.pts { text-align: center; font-size: .9rem; font-variant-numeric: tabular-nums; color: var(--color-muted-foreground); }
+.pts .h { color: var(--color-home); font-weight: 700; }
+.pts .a { color: var(--color-away); font-weight: 700; }
+.serve { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--color-foreground); flex: none; }
+</style>

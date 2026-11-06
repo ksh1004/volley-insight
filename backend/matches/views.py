@@ -10,7 +10,10 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from analytics import queries as aq
+from analytics.models import MatchPrediction
 from league.queries import BOX_FIELDS, FINISHED, gender_param, rates, resolve_season
+from ops.models import Correction, QualityIssue
 
 from .models import Match, PlayerMatchStat, RallyEvent, SetScore, TeamMatchStat
 from .serializers import MatchListSerializer, match_key, team_ref
@@ -26,7 +29,8 @@ class MatchPagination(PageNumberPagination):
 
 def base_matches():
     return (Match.objects.select_related("competition__season", "home_team", "away_team")
-            .prefetch_related(Prefetch("sets", queryset=SetScore.objects.order_by("set_no"))))
+            .prefetch_related(Prefetch("sets", queryset=SetScore.objects.order_by("set_no")),
+                              Prefetch("predictions", queryset=MatchPrediction.objects.order_by("-predicted_at"))))
 
 
 def get_match(key: str) -> Match:
@@ -90,6 +94,28 @@ def box(row, extra=()):
     return d
 
 
+def data_notes(m, key):
+    """Known problems of this match's data (unresolved ERROR quality issues, PIPE-10) and how many of its values an
+    admin corrected (ADM-03), so the page can say so instead of silently showing gaps."""
+    by_rule = {}
+    for i in (QualityIssue.objects.filter(match=m, severity=QualityIssue.Severity.ERROR)
+              .exclude(status=QualityIssue.Status.RESOLVED).order_by("set_no", "rule")):
+        note = by_rule.setdefault(i.rule, {"rule": i.rule, "label": i.get_rule_display(), "sets": []})
+        if i.set_no:
+            note["sets"].append(i.set_no)
+    corrected = Correction.objects.filter(is_active=True).filter(
+        Q(target=Correction.Target.MATCH, key=key) | Q(key__startswith=f"{key}/")).count()
+    return {"issues": list(by_rule.values()), "corrected": corrected}
+
+
+def live_brief(m):
+    """Whether the match is (or was) followed live or replayed, for the link to its live page."""
+    from live.models import LiveMatchState
+
+    st = LiveMatchState.objects.filter(match=m).only("mode", "status", "updated_at").first()
+    return {"mode": st.mode, "status": st.status, "updated_at": st.updated_at} if st else None
+
+
 class MatchDetailView(APIView):
     """GET /api/matches/{season}-{game_no}: sets, team and player box scores (WEB-03)."""
 
@@ -117,7 +143,16 @@ class MatchDetailView(APIView):
             "referee_main": m.referee_main, "referee_sub": m.referee_sub,
             "set_details": [{"set_no": s.set_no, "home_points": s.home_points, "away_points": s.away_points,
                              "duration_min": s.duration_min} for s in m.sets.all()],
-            "team_stats": team_stats, "players": players, "rally_sets": rally_sets, "source": SOURCE,
+            "team_stats": team_stats, "players": players, "rally_sets": rally_sets,
+            "live": live_brief(m),
+            "data_notes": data_notes(m, key),
+            "preview": {
+                "prediction": aq.latest_prediction(m),
+                "head_to_head": aq.head_to_head(m),
+                "home": aq.team_form(m.home_team, m.scheduled_at, m.competition.season),
+                "away": aq.team_form(m.away_team, m.scheduled_at, m.competition.season),
+            },
+            "source": SOURCE,
         })
 
 

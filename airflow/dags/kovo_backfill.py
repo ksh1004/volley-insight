@@ -14,9 +14,10 @@ from datetime import date, timedelta
 import pendulum
 from airflow.sdk import Param, dag, get_current_context, task, task_group
 
+from kovo_tasks import alerts
 from kovo_tasks import pipeline as p
 
-DEFAULT_ARGS = {"retries": 3, "retry_delay": timedelta(minutes=5)}
+DEFAULT_ARGS = alerts.default_args()
 
 
 @dag(
@@ -26,6 +27,7 @@ DEFAULT_ARGS = {"retries": 3, "retry_delay": timedelta(minutes=5)}
     catchup=False,
     max_active_runs=1,
     default_args=DEFAULT_ARGS,
+    on_failure_callback=alerts.on_dag_failure,
     tags=["kovo", "collect", "manual"],
     doc_md=__doc__,
     params={

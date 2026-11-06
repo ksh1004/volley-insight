@@ -40,3 +40,13 @@ export function postseasonZone(rows) {
   }
   return zone
 }
+
+// "방금", "12분 전", "3시간 전", then the date (articles)
+export function fmtAgo(iso, now = Date.now()) {
+  if (!iso) return ''
+  const min = Math.floor((now - new Date(iso).getTime()) / 60000)
+  if (min < 1) return '방금'
+  if (min < 60) return `${min}분 전`
+  if (min < 24 * 60) return `${Math.floor(min / 60)}시간 전`
+  return parts(iso, { month: 'long', day: 'numeric' })
+}

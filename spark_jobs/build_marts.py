@@ -2,9 +2,11 @@
 
   HDFS /curated/kovo/{match,set_score,team_match_stat,player_match_stat,rally_event}  (all seasons)
     -> team_rating            Elo after every finished match
-    -> team_season_summary    record, rank, indicators, side-out / break rate per competition
+    -> team_season_summary    record, rank, indicators, side-out / break rate per competition,
+                              attack after good / poor reception and clutch rallies (20:20+) from play-by-play
     -> player_season_summary  indicators + percentile within position per competition
     -> HDFS /marts/kovo/{table}/ (Parquet) and PostgreSQL (one transaction, sql/merge_marts.sql)
+    -> HDFS /marts/kovo/match_elo/  pre-match Elo of every match incl. upcoming ones (input of build_features.py)
 
 Recomputed from all seasons on every run (a few seconds of work; Elo depends on the whole history).
 
@@ -41,23 +43,32 @@ def read(spark, name):
 
 
 # ---------------------------------------------------------------- Elo (driver side: needs match order)
-def elo(matches):
-    """matches: rows ordered by time with season_code, game_no, gender, home_code, away_code, home_sets,
-    away_sets, game_date. Returns (rating rows, summary dict)."""
+def elo(matches, upcoming=()):
+    """matches: finished rows ordered by time with season_code, game_no, gender, home_code, away_code, home_sets,
+    away_sets, game_date. upcoming: scheduled rows (season_code, game_no, home_code, away_code).
+    Returns (rating rows, pre-match rows, summary dict). Pre-match rows hold each match's ratings *before* it
+    was played (for upcoming matches: the current ratings), the prediction features of the next step."""
     rows = list(matches)
     home_rate = sum(r.home_sets > r.away_sets for r in rows) / max(1, len(rows))
     home_adv = -400 * math.log10(1 / home_rate - 1) if 0 < home_rate < 1 else 0.0
     rating, season_of = {}, {}
-    out, hits, log_loss = [], 0, 0.0
+    out, pre, hits, log_loss = [], [], 0, 0.0
+
+    def current(team, season):
+        """Rating a team brings into a match of `season` (new season: pulled back toward the mean)."""
+        if team not in rating:
+            return ELO_START
+        if season_of[team] != season:
+            return ELO_START + (rating[team] - ELO_START) * SEASON_CARRY
+        return rating[team]
+
     for r in rows:
         for t in (r.home_code, r.away_code):
-            if t not in rating:
-                rating[t] = ELO_START
-            elif season_of[t] != r.season_code:  # new season: regress toward the mean
-                rating[t] = ELO_START + (rating[t] - ELO_START) * SEASON_CARRY
+            rating[t] = current(t, r.season_code)
             season_of[t] = r.season_code
         rh, ra = rating[r.home_code], rating[r.away_code]
         p_home = 1 / (1 + 10 ** ((ra - rh - home_adv) / 400))
+        pre.append((r.season_code, r.game_no, round(rh, 2), round(ra, 2), round(p_home, 4)))
         home_won = r.home_sets > r.away_sets
         hits += (p_home >= 0.5) == home_won
         log_loss -= math.log(p_home if home_won else 1 - p_home)
@@ -67,8 +78,12 @@ def elo(matches):
         rating[r.away_code] = ra - change
         for team, new, delta, p in ((r.home_code, rh + change, change, p_home), (r.away_code, ra - change, -change, 1 - p_home)):
             out.append((r.season_code, r.game_no, team, r.game_date, round(new, 2), round(delta, 2), round(p, 4)))
+    for u in upcoming:  # not played yet: today's ratings, nothing is updated
+        rh, ra = current(u.home_code, u.season_code), current(u.away_code, u.season_code)
+        pre.append((u.season_code, u.game_no, round(rh, 2), round(ra, 2),
+                    round(1 / (1 + 10 ** ((ra - rh - home_adv) / 400)), 4)))
     n = max(1, len(rows))
-    return out, {"matches": len(rows), "home_win_rate": round(home_rate, 4), "home_advantage_elo": round(home_adv, 1),
+    return out, pre, {"matches": len(rows), "home_win_rate": round(home_rate, 4), "home_advantage_elo": round(home_adv, 1),
                  "elo_accuracy": round(hits / n, 4), "elo_log_loss": round(log_loss / n, 4)}
 
 
@@ -93,6 +108,50 @@ def serve_receive(rally, matches):
         F.sum(F.when(~serving & won, 1).otherwise(0)).alias("sideouts"))
 
 
+ATTACKS = ["AA", "AC", "AT", "AE", "AQ", "AW", "AZ"]
+
+
+def rally_situations(rally, matches):
+    """Per (season, league, team), from play-by-play (ANL-11):
+      first attack after the team's own reception: kills when the reception was excellent (RR exc) vs any other
+      clutch rallies: started at 20:20 or later (10:10 in set 5), and how many the team won"""
+    keys = ["season_code", "game_no", "set_no", "rally_no"]
+    plays = rally.where((F.col("rally_no") > 0) & (F.col("rally_no") < 200))  # 0 = set start, 200 = set end marker
+    rec = (plays.where(F.col("action_code") == "RR").groupBy(*keys, "team_code")
+           .agg(F.min_by("result_code", "event_no").alias("rec"), F.min("event_no").alias("rec_no")))
+    att = plays.where(F.col("action_code").isin(ATTACKS)).select(*keys, "team_code", F.col("event_no").alias("att_no"),
+                                                                  (F.col("result_code") == "suc").cast("int").alias("kill"))
+    first_att = (rec.join(att, [*keys, "team_code"]).where(F.col("att_no") > F.col("rec_no"))
+                 .groupBy(*keys, "team_code", "rec").agg(F.min_by("kill", "att_no").alias("kill")))
+    after = first_att.groupBy("season_code", "game_no", "team_code").agg(
+        F.sum((F.col("rec") == "exc").cast("int")).alias("good_n"),
+        F.sum(F.when(F.col("rec") == "exc", F.col("kill")).otherwise(0)).alias("good_kill"),
+        F.sum((F.col("rec") != "exc").cast("int")).alias("poor_n"),
+        F.sum(F.when(F.col("rec") != "exc", F.col("kill")).otherwise(0)).alias("poor_kill"))
+
+    rallies = plays.groupBy(*keys).agg(
+        F.max("home_score").alias("h_end"), F.max("away_score").alias("a_end"),
+        F.first(F.when(F.col("grade") > 0, F.col("team_code")), ignorenulls=True).alias("winner"))         .where(F.col("winner").isNotNull())
+    w = Window.partitionBy("season_code", "game_no", "set_no").orderBy("rally_no")
+    rallies = rallies.withColumn("h0", F.coalesce(F.lag("h_end").over(w), F.lit(0)))         .withColumn("a0", F.coalesce(F.lag("a_end").over(w), F.lit(0)))
+    line = F.when(F.col("set_no") == 5, 10).otherwise(20)
+    clutch = rallies.where((F.col("h0") >= line) & (F.col("a0") >= line))
+    m = matches.select("season_code", "game_no", "league_code", "home_code", "away_code")
+    clutch_team = clutch.join(m, ["season_code", "game_no"]).select(
+        "season_code", "game_no", "winner", F.explode(F.array("home_code", "away_code")).alias("team_code"))         .groupBy("season_code", "game_no", "team_code").agg(
+            F.count("*").alias("clutch_n"), F.sum((F.col("winner") == F.col("team_code")).cast("int")).alias("clutch_won"))
+
+    per_match = after.join(clutch_team, ["season_code", "game_no", "team_code"], "full")         .join(m.select("season_code", "game_no", "league_code"), ["season_code", "game_no"])
+    sums = per_match.groupBy("season_code", "league_code", "team_code").agg(
+        *[F.sum(F.coalesce(c, F.lit(0))).alias(c) for c in ("good_n", "good_kill", "poor_n", "poor_kill", "clutch_n", "clutch_won")])
+    pct = lambda a, b: F.when(F.col(b) > 0, F.round(100 * F.col(a) / F.col(b), 2))  # noqa: E731
+    return sums.select("season_code", "league_code", "team_code",
+                       pct("good_kill", "good_n").alias("attack_after_good_receive"),
+                       pct("poor_kill", "poor_n").alias("attack_after_poor_receive"),
+                       F.when(F.col("clutch_n") > 0, F.col("clutch_n")).alias("clutch_rallies"),
+                       pct("clutch_won", "clutch_n").alias("clutch_win_rate"))
+
+
 # ---------------------------------------------------------------- indicators
 def rate_columns(prefix=""):
     c = lambda name: F.col(prefix + name)  # noqa: E731
@@ -114,7 +173,7 @@ SUMS = ["attack_attempts", "attack_success", "attack_blocked", "attack_errors", 
         "receive_attempts", "receive_excellent", "receive_errors", "dig_success", "set_success", "errors"]
 
 
-def team_summaries(matches, sets, team_stats, ratings, sr):
+def team_summaries(matches, sets, team_stats, ratings, sr, situations):
     m = matches.select("season_code", "game_no", "league_code", "home_code", "away_code", "home_sets", "away_sets")
     pts = sets.groupBy("season_code", "game_no").agg(F.sum("home_points").alias("hp"), F.sum("away_points").alias("ap"))
     m = m.join(pts, ["season_code", "game_no"], "left")
@@ -156,7 +215,7 @@ def team_summaries(matches, sets, team_stats, ratings, sr):
                    F.when(F.col("received") > 0, F.round(100 * F.col("sideouts") / F.col("received"), 2)).alias("sideout_rate"),
                    F.when(F.col("served") > 0, F.round(100 * F.col("breaks") / F.col("served"), 2)).alias("break_rate"))
     keys = ["season_code", "league_code", "team_code"]
-    return record.drop("gender").join(box, keys, "left").join(sr, keys, "left").join(final, keys, "left")
+    return record.drop("gender").join(box, keys, "left").join(sr, keys, "left").join(final, keys, "left")         .join(situations, keys, "left")
 
 
 def player_summaries(matches, player_stats):
@@ -223,23 +282,29 @@ def main():
     sets, team_stats = read(spark, "set_score"), read(spark, "team_match_stat")
     player_stats, rally = read(spark, "player_match_stat"), read(spark, "rally_event")
 
-    rating_rows, info = elo(matches.select("season_code", "game_no", "gender", "home_code", "away_code", "home_sets",
-                                           "away_sets", "game_date", "start_time")
-                            .orderBy("game_date", F.coalesce("start_time", F.lit("00:00")), "season_code", "game_no")
-                            .toLocalIterator())
+    upcoming = read(spark, "match").where(F.col("status").isin("SCHEDULED", "LIVE"))         .select("season_code", "game_no", "home_code", "away_code").collect()
+    rating_rows, pre_rows, info = elo(
+        matches.select("season_code", "game_no", "gender", "home_code", "away_code", "home_sets", "away_sets",
+                       "game_date", "start_time")
+        .orderBy("game_date", F.coalesce("start_time", F.lit("00:00")), "season_code", "game_no").toLocalIterator(),
+        upcoming)
     print("elo:", json.dumps(info))
     ratings = spark.createDataFrame(rating_rows, "season_code string, game_no int, team_code string, rated_on string, "
                                                  "rating double, rating_change double, win_prob double").cache()
 
     tables = {
         "team_rating": ratings,
-        "team_season_summary": team_summaries(matches, sets, team_stats, ratings, serve_receive(rally, matches)),
+        "team_season_summary": team_summaries(matches, sets, team_stats, ratings, serve_receive(rally, matches),
+                                              rally_situations(rally, matches)),
         "player_season_summary": player_summaries(matches, player_stats),
     }
     tables = {k: v.cache() for k, v in tables.items()}
     print("rows:", {k: v.count() for k, v in tables.items()})
     for name, df in tables.items():
         df.write.mode("overwrite").parquet(f"{MARTS}/{name}")
+    # pre-match Elo of every match (finished and upcoming): input of build_features.py, not loaded into PostgreSQL
+    spark.createDataFrame(pre_rows, "season_code string, game_no int, home_elo double, away_elo double, "
+                                    "elo_home_win_prob double").write.mode("overwrite").parquet(f"{MARTS}/match_elo")
     load(spark, tables)
     spark.stop()
 

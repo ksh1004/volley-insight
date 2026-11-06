@@ -1,0 +1,132 @@
+<script setup>
+// Header search with autocomplete (WEB-10). ARIA 1.2 combobox: the input owns a listbox of teams/players;
+// arrow keys move the active option, Enter opens it (or the full search page when none is active),
+// Escape closes. Suggestions are fetched 200 ms after typing stops; a newer request cancels the older one.
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { suggest } from '@/api/client'
+import { GENDERS, POSITIONS } from '@/constants/volley'
+
+const router = useRouter()
+const route = useRoute()
+const q = ref(route.name === 'search' ? String(route.query.q || '') : '')
+const items = ref([])
+const open = ref(false)
+const active = ref(-1)
+const loading = ref(false)
+let timer = null
+let controller = null
+
+const listId = 'search-suggest'
+const optionId = (i) => `search-opt-${i}`
+const expanded = computed(() => open.value && q.value.trim().length > 0)
+
+function describe(it) {
+  if (it.type === 'team') return `팀 · ${GENDERS[it.gender] || ''}`
+  return ['선수', it.team_name, POSITIONS[it.position] || it.position].filter(Boolean).join(' · ')
+}
+
+watch(q, (v) => {
+  clearTimeout(timer)
+  active.value = -1
+  if (!v.trim()) { items.value = []; return }
+  timer = setTimeout(fetchSuggest, 200)
+})
+
+async function fetchSuggest() {
+  controller?.abort()
+  controller = new AbortController()
+  loading.value = true
+  try {
+    items.value = (await suggest(q.value.trim(), controller.signal)).results || []
+    open.value = true
+  } catch (e) {
+    if (e.name !== 'CanceledError') items.value = []
+  } finally {
+    loading.value = false
+  }
+}
+
+function go(it) {
+  open.value = false
+  router.push(it.type === 'team' ? `/teams/${it.code}` : `/players/${it.code}`)
+}
+
+function submit() {
+  const text = q.value.trim()
+  if (active.value >= 0 && items.value[active.value]) return go(items.value[active.value])
+  if (!text) return
+  open.value = false
+  router.push({ name: 'search', query: { q: text } })
+}
+
+function onKey(e) {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (!items.value.length) return
+    e.preventDefault()
+    open.value = true
+    const n = items.value.length
+    active.value = e.key === 'ArrowDown' ? (active.value + 1) % n : (active.value - 1 + n) % n
+  } else if (e.key === 'Escape') {
+    if (open.value) { e.preventDefault(); open.value = false; active.value = -1 } else q.value = ''
+  }
+}
+
+// close when focus leaves the whole widget (clicking an option keeps it until the click lands)
+function onFocusOut(e) {
+  if (!e.currentTarget.contains(e.relatedTarget)) open.value = false
+}
+
+watch(() => route.fullPath, () => { open.value = false; if (route.name !== 'search') q.value = '' })
+onBeforeUnmount(() => { clearTimeout(timer); controller?.abort() })
+</script>
+
+<template>
+  <form class="search" role="search" @submit.prevent="submit" @focusout="onFocusOut">
+    <label for="site-search" class="sr-only">팀, 선수, 기사 검색</label>
+    <svg class="icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="6" /><path d="m14 14 4 4" /></svg>
+    <input id="site-search" v-model="q" type="search" autocomplete="off" placeholder="팀·선수·기사 검색"
+           role="combobox" aria-autocomplete="list" :aria-expanded="expanded" :aria-controls="listId"
+           :aria-activedescendant="active >= 0 ? optionId(active) : undefined"
+           @keydown="onKey" @focus="open = items.length > 0" />
+    <ul v-show="expanded" :id="listId" role="listbox" class="list" aria-label="검색 추천">
+      <li v-for="(it, i) in items" :id="optionId(i)" :key="`${it.type}-${it.code}`" role="option"
+          :aria-selected="i === active" class="option" :class="{ active: i === active }"
+          @mousedown.prevent @click="go(it)" @mousemove="active = i">
+        <span class="name">{{ it.name }}</span>
+        <span class="desc">{{ describe(it) }}</span>
+      </li>
+      <li v-if="!items.length && !loading" class="none" role="presentation">추천 결과가 없습니다</li>
+      <li role="presentation">
+        <button type="submit" class="all" tabindex="-1" @mousedown.prevent>'{{ q.trim() }}' 기사까지 전체 검색</button>
+      </li>
+    </ul>
+  </form>
+</template>
+
+<style scoped>
+.search { position: relative; margin-left: auto; width: min(280px, 32vw); }
+.icon { position: absolute; left: 10px; top: 50%; width: 16px; height: 16px; transform: translateY(-50%);
+        fill: none; stroke: var(--color-muted-foreground); stroke-width: 1.8; pointer-events: none; }
+input { width: 100%; font: inherit; font-size: .9rem; padding: 7px 10px 7px 32px; min-height: 36px; border-radius: 999px;
+        border: 1px solid var(--color-border); background: var(--color-muted); color: var(--color-foreground);
+        transition: border-color .15s var(--ease), background-color .15s var(--ease); }
+input:hover { border-color: var(--color-primary); }
+input:focus { background: var(--color-card); border-color: var(--color-primary); }
+input::placeholder { color: var(--color-muted-foreground); }
+.list { position: absolute; top: calc(100% + 6px); left: 0; right: 0; min-width: 260px; margin: 0; padding: 4px; list-style: none;
+        background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius);
+        box-shadow: 0 8px 24px rgb(15 23 42 / .12); z-index: 20; }
+.option { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-radius: 6px; cursor: pointer; min-height: 40px; align-items: center; }
+.option.active { background: var(--color-primary-soft); }
+.name { font-weight: 500; }
+.desc { color: var(--color-muted-foreground); font-size: .8rem; white-space: nowrap; }
+.none { padding: 8px 10px; color: var(--color-muted-foreground); font-size: .85rem; }
+.all { all: unset; display: block; width: 100%; box-sizing: border-box; padding: 8px 10px; margin-top: 2px; border-top: 1px solid var(--color-border-soft);
+       color: var(--color-primary); font-size: .85rem; cursor: pointer; border-radius: 0 0 6px 6px; }
+.all:hover { background: var(--color-primary-soft); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (pointer: coarse) { input { min-height: 44px; } .option { min-height: 44px; } }
+/* own row under the menu, sharing it with the account link (App.vue) */
+@media (max-width: 760px) { .search { width: auto; flex: 1 1 calc(100% - 160px); margin-left: 0; } }
+</style>

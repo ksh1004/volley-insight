@@ -1,0 +1,35 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "analysis": {
+      "tokenizer": {
+        "ko_nori": {"type": "nori_tokenizer", "decompound_mode": "mixed", "discard_punctuation": true},
+        "bigram": {"type": "ngram", "min_gram": 2, "max_gram": 2, "token_chars": ["letter", "digit"]}
+      },
+      "filter": {
+        "ko_pos": {"type": "nori_part_of_speech"}
+      },
+      "analyzer": {
+        "ko": {"type": "custom", "tokenizer": "ko_nori", "filter": ["ko_pos", "nori_readingform", "lowercase"]},
+        "bigram": {"type": "custom", "tokenizer": "bigram", "filter": ["cjk_width", "lowercase"]}
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "url": {"type": "keyword", "index": false},
+      "title": {"type": "text", "analyzer": "ko", "fields": {"bigram": {"type": "text", "analyzer": "bigram"}}},
+      "summary": {"type": "text", "analyzer": "ko", "fields": {"bigram": {"type": "text", "analyzer": "bigram"}}},
+      "publisher": {"type": "keyword"},
+      "source": {"type": "keyword"},
+      "published_at": {"type": "date"},
+      "collected_at": {"type": "date"},
+      "team_codes": {"type": "keyword"},
+      "team_names": {"type": "keyword"},
+      "player_codes": {"type": "keyword"},
+      "player_names": {"type": "keyword"}
+    }
+  }
+}

@@ -197,22 +197,27 @@ flowchart LR
 
 | DAG | 실행 주기 | 주요 태스크 | 관련 요구사항 |
 |---|---|---|---|
-| `kovo_daily` | 매일 06:00 | 시즌 목록 → 현재 시즌 일정·결과 → 최근 7일 중 확정 안 된 종료 경기의 상세·문자중계(누락 보충) → HDFS 적재 확인 → Spark 정제. (구현 예정: 순위·선수 정보 수집, 데이터 마트, `entities` 색인) | COL-01, 02, 05, PIPE-04, 05 |
+| `kovo_daily` | 매일 06:00 | 시즌 목록 → 현재 시즌 일정·결과 → 최근 7일 중 확정 안 된 종료 경기의 상세·문자중계(누락 보충) → HDFS 적재 확인 → Spark 정제 → 데이터 마트 → `entities` 색인, 선수 유형(`player_types.py`) | COL-01, 02, 05, PIPE-04, 05 |
 | `kovo_postgame` | 매일 14:00~23:40, 20분마다 (주말 경기는 14·16시 시작) | DB에서 어제 이후 시작했는데 확정 안 된 경기 확인(없으면 KOVO 요청 없이 종료) → 그 시즌 일정 갱신 → 끝난 경기의 상세·문자중계 → HDFS 적재 확인 → Spark 정제 → `CONFIRMED`. 문자중계가 아직 없으면 `FINISHED`로 남고 다음 실행이 다시 수집 | COL-03, 10, ANL-01, NFR-13 |
 | `kovo_backfill` | 수동 실행 (`seasons` 예: `001-021`, `limit`, `skip_confirmed`) | 시즌 목록 → 시즌별(차례로) 일정 → 확정 안 된 종료 경기의 상세·문자중계(`020` 이전은 문자중계 없음) → HDFS 적재 확인 → Spark 정제 | COL-04, PIPE-08 |
 | `news_collect` | 매시 정각 | 뉴스 검색 API·RSS 수집 → `news.article` 발행 | COL-07 |
 | `ml_weekly_retrain` | 매주 월 04:00 | 피처 생성 → 후보 모델 학습(Hyperopt) → MLflow `candidate` 등록 → 최근 경기 성능 비교 → 더 좋으면 `champion` 교체 | ANL-03, 09, 10 |
 | `ml_daily_predict` | 매일 07:00 | `champion` 모델로 7일 내 예정 경기 예측 → `match_prediction` 저장 | ANL-03, WEB-08 |
-| `replay_match` | 수동 실행 (경기 번호, 배속 입력) | 경기 재생기 실행 | PIPE-11 |
-| `reprocess` | 수동 실행 (날짜·시즌 입력) | 원천부터 정제·마트 재생성 | PIPE-08, ADM-02 |
+| `live_replay` | 수동 실행 (`match`, `speed`) | 경기 재생기 실행 → Flink가 끝까지 따라갔는지 확인 | PIPE-11 |
+| `kovo_reprocess` | 수동 실행 (`games` 예: `023-9, 023-10`, `dates` 예: `2026-11-01~2026-11-05`, `seasons`, `recollect`) | 날짜 → 경기 번호(PostgreSQL) → (`recollect`면) 그 시즌 일정 + 경기 상세·문자중계 다시 수집(확정된 경기 포함, 50경기까지) → HDFS 적재 확인 → 관련 시즌 전체 Spark 정제(원천부터) → 데이터 마트 | PIPE-08, ADM-02 |
 
-공통 설정: 재시도 3회(5분 간격), 실패 시 관리자 알림(이메일 또는 메신저 웹훅), 동시 실행 1개 (PIPE-09).
+공통 설정: 재시도 3회(5분 간격, ML·기사는 2회), 실패 시 관리자 알림(메신저 웹훅 + Django 관리 화면), 동시 실행 1개 (PIPE-09).
 
 구현 메모 (2026-11-03, `airflow/dags/kovo_*.py`, 공통 단계는 `airflow/dags/kovo_tasks/pipeline.py`):
 - **HDFS 적재 확인**: 수집 실행마다 `run_id`, 토픽, 건수를 넘기고, 센서가 WebHDFS로 확정된 파일(숨김 파일 제외)에서 그 `run_id`가 붙은 줄을 센다. 모두 보이면 통과한다(1분 간격, reschedule 모드).
 - **KOVO 요청 제한 공유**: 태스크는 각자 다른 프로세스라, 컨테이너의 잠금 파일(`KOVO_RATE_LOCK_FILE`)로 모든 수집 태스크가 초당 1회를 함께 지킨다.
 - **정제 동시 실행**: Spark 실행마다 전용 staging 스키마를 쓰고 끝나면 지운다. 서빙 테이블 반영은 PostgreSQL advisory lock으로 한 번에 하나만 한다. YARN 자원이 모자라면 두 번째 작업은 YARN 대기열에서 기다린다.
-- 실패 알림은 아직 없다(Airflow UI에서 확인).
+- **실패 알림 (PIPE-09, 2026-11-06, `kovo_tasks/alerts.py`)**: 모든 DAG의 `default_args`에 작업 실패 콜백, DAG에 실행 실패 콜백을 단다.
+  - 작업이 재시도를 모두 쓰고 실패하면 서비스 DB `job_alert`에 한 줄(DAG·단계·실행·시도·오류 첫 2000자·Airflow 로그 링크)을 남긴다. `ALERT_WEBHOOK_URL`(Mattermost·Slack은 `{"text"}`, Discord는 `{"content"}`)이 있으면 메신저로도 보낸다. 전송 결과는 `delivery`에 `SENT`·`NO_WEBHOOK`·`FAILED`로 남는다.
+  - 같은 단계의 미확인 알림이 6시간 안에 있으면 기록만 하고 다시 보내지 않는다(`REPEAT`). 20분마다 도는 `kovo_postgame`이 계속 실패해도 채널이 넘치지 않게 하기 위해서다.
+  - 실행 실패 콜백(DAG 처리기에서 돈다)은 그 실행에 작업 알림이 없을 때만 알린다. 메모리 부족 등으로 작업 프로세스가 강제 종료되면 작업 콜백이 돌지 못하기 때문이다.
+  - 서비스 DB가 꺼져 있으면 기록 없이 메신저로만 보낸다. 콜백은 예외를 내지 않는다(원래 실패 로그를 가리지 않게).
+  - Django 관리 첫 화면에 "확인하지 않은 작업 실패 N건"이 뜨고, 수집 현황에서 '확인함'으로 표시한다.
 
 ```mermaid
 flowchart LR
@@ -237,7 +242,7 @@ flowchart LR
 
 - 언어는 팀 주 언어에 맞춰 PyFlink(Table API·DataStream API)를 쓴다. Kafka·JDBC·Elasticsearch 커넥터 JAR을 이미지에 포함한다.
 - 체크포인트 30초, 저장 위치는 HDFS `/flink/checkpoints`. 장애 시 마지막 체크포인트부터 재개한다.
-- `raw-archiver`는 `flink-job-keeper` 서비스가 1분마다 확인해 없으면 다시 제출한다(PC·Docker 재시작 대비). 다시 제출된 작업은 소비자 그룹에 커밋된 Kafka 위치부터 읽는다. 체크포인트 간격은 제출하는 쪽 설정을 따르므로 작업 코드에 직접 둔다.
+- `raw-archiver`는 `flink-job-keeper` 서비스가 1분마다 확인해 없으면 다시 제출한다(PC·Docker 재시작 대비). 다시 제출할 때는 가장 최근의 완료된 체크포인트(또는 세이브포인트)에서 복원한다(`flink_jobs/latest_checkpoint.py`). 체크포인트에는 Kafka 위치와 쓰다 만 파일의 상태가 함께 있어서 재시작해도 메시지가 빠지지 않는다. 커밋된 Kafka 위치부터 새로 시작하면 쓰다 만 파일의 내용이 버려져 최대 몇 분치가 빠진다(2026-11-03 실제 발생, HDFS 적재 확인 센서가 검출). 체크포인트 간격·보관 위치(`/flink/checkpoints/raw-archiver`, 작업이 멈춰도 보관)는 제출하는 쪽 설정을 따르므로 작업 코드에 직접 둔다. 일부러 멈출 때는 `flink cancel`이 아니라 세이브포인트와 함께 `flink stop`을 쓴다.
 
 ### 1.10 백엔드·프론트엔드 모듈 구조
 
@@ -249,12 +254,12 @@ flowchart LR
 | `analytics` | 전력 지수, 예측, 데이터 마트 조회 | TeamRating, MatchPrediction, ModelVersion, TeamSeasonSummary, PlayerSeasonSummary |
 | `live` | 실시간 상태 조회, SSE 엔드포인트 | LiveMatchState, LiveSetMetric |
 | `articles` | 기사 목록, 통합 검색(Elasticsearch) | Article, ArticleTeam, ArticlePlayer |
-| `ops` | 수집 이력, 수동 실행(Airflow REST API 호출) | CollectionLog |
+| `ops` | 데이터 품질 검사 결과, 관리자 데이터 보정, 수집 현황·작업 실패 알림, 수동 실행 (모두 Django 관리 화면) | QualityIssue, Correction, JobAlert, ManualRun |
 
 | Vue 영역 | 구성 |
 |---|---|
 | `views/` | Home, Schedule, MatchDetail, MatchLive, Standings, TeamDetail, PlayerDetail, Preview, Articles, Search, Login, Admin |
-| `stores/` (Pinia) | `auth`(토큰·사용자), `favorites`(관심 팀), `live`(SSE 연결·실시간 상태), `filters`(남녀부·시즌 선택) |
+| `stores/` (Pinia) | `auth`(토큰·사용자·관심 팀과 선수), `filters`(남녀부·시즌 선택). 실시간 상태는 화면 안에서 SSE로 받는다 |
 | `api/` | axios 인스턴스와 도메인별 API 함수 |
 | `components/charts/` | 전력 지수 추이, 레이더 차트, 승리 확률 그래프 |
 
@@ -289,14 +294,23 @@ flowchart LR
 | `GET /api/players/{id}` | 선수 상세(시즌·경기 기록, 효율 지표, 백분위) | WEB-07 |
 | `GET /api/articles?team=&player=&page=` | 기사 목록 | WEB-09 |
 | `GET /api/search?q=` / `GET /api/search/suggest?q=` | 통합 검색 / 자동완성 | WEB-10 |
-| `POST /api/auth/signup`, `POST /api/auth/login` | 회원가입·로그인 | WEB-11 |
-| `GET·POST·DELETE /api/me/favorites` | 관심 팀·선수 | WEB-12 |
-| `GET /api/admin/collection-logs` | 수집 이력 | ADM-01 |
-| `POST /api/admin/jobs/{dag}/run` | 수집·재처리 수동 실행 (Airflow REST API 호출) | ADM-02 |
+| `POST /api/auth/signup`, `POST /api/auth/login`, `POST /api/auth/logout` | 회원가입·로그인·로그아웃 (토큰 발급·삭제) | WEB-11 |
+| `GET·DELETE /api/me` | 내 정보, 회원 탈퇴(비밀번호 확인) | WEB-11, NFR-03 |
+| `GET·POST /api/me/favorites`, `DELETE /api/me/favorites/{team\|player}/{코드}` | 관심 팀·선수 | WEB-12 |
+| `GET /api/me/feed` | 홈 화면의 관심 팀(순위·다음 경기·지난 경기)·관심 선수(최근 경기·시즌 기록·폼) | WEB-12 |
+| `/admin/ops/jobalert/` (Django 관리 "수집 현황") | Airflow 작업별 최근 실행·7일 실패 수, 수집기 실행 결과(ES `ops-collection-*`), 작업 실패 내역 | ADM-01, PIPE-09 |
+| `/admin/ops/manualrun/` (Django 관리 "수동 실행") | 예약 작업 지금 실행, 경기·날짜·시즌 재처리, 과거 시즌 수집, 경기 재생 (Airflow REST API 호출), 실행 기록 | ADM-02 |
+
+구현 메모 — 회원 기능 (2026-11-05, `backend/accounts`, Vue `AuthView`·`AccountView`·`FavoriteButton`·`FavoriteFeed`):
+- 이메일·닉네임·비밀번호로 가입한다. `username`에는 소문자로 바꾼 이메일을 넣고, 로그인은 이메일로 찾는다(관리자 계정은 `username`이 달라도 된다). 비밀번호는 Django 기본 해시와 검증기(8자 이상, 흔한·숫자만·이메일과 비슷한 비밀번호 거절)를 쓴다(NFR-31).
+- 인증은 DRF 토큰. Vue가 `localStorage`에 두고 `Authorization: Token ...`으로 보낸다. 로그아웃은 토큰을 지운다(모든 기기에서 로그아웃). 서버가 모르는 토큰이면 공개 API도 401이 되므로, axios가 토큰을 버리고 그 요청을 토큰 없이 한 번 다시 보낸다.
+- 가입·로그인은 IP마다 1분에 10번(`AUTH_THROTTLE_RATE`). 로그인 실패 문구는 이메일이 있는지 알 수 없게 하나로 쓴다. 로그인 뒤 돌아갈 주소(`?next=`)는 같은 사이트 경로만 따른다.
+- 저장하는 개인정보는 이메일·닉네임뿐이고, 메일은 보내지 않는다. 탈퇴하면 계정·관심 목록·토큰을 바로 지운다(NFR-03).
+- 관심 팀·선수는 각 10개까지. 홈 맨 위 "내 관심"에 팀은 순위·최근 5경기·다음 경기(예측 확률 포함)·지난 경기, 선수는 최근 경기와 시즌 기록·폼(ANL-08)을 보여준다. 비율은 시도가 적으면(경기 5회, 시즌 15회 미만) 숨긴다. 오늘·다음 경기와 최근 결과에서는 관심 팀 경기를 앞에 두고 별로 표시하며, 순위표에서도 관심 팀 줄을 강조한다.
 
 목록 API는 페이지네이션(기본 20건)을 적용하고, 조회 결과는 갱신 주기에 맞춰 캐시한다(일정·순위 5분, 경기 상세는 확정 후 1일).
 
-구현 메모 (2026-11-03): 경기 경로는 `/api/matches/{시즌-경기번호}`(예: `022-3`)로 했다. 내부 id는 DB를 다시 만들면 바뀌기 때문이다. 팀·선수는 KOVO 코드로 찾는다. 순위와 선수 순위는 데이터 마트(`team_season_summary` 등)가 생기기 전까지 API가 경기 기록에서 바로 계산한다(`backend/league/standings.py`). 캐시는 아직 적용하지 않았다. 구현한 화면은 홈, 일정·결과, 경기 상세, 순위, 팀, 선수다. 프리뷰·실시간·기사·검색은 해당 데이터가 준비된 뒤 만든다.
+구현 메모 (2026-11-03): 경기 경로는 `/api/matches/{시즌-경기번호}`(예: `022-3`)로 했다. 내부 id는 DB를 다시 만들면 바뀌기 때문이다. 팀·선수는 KOVO 코드로 찾는다. 순위와 선수 순위는 데이터 마트(`team_season_summary` 등)가 생기기 전까지 API가 경기 기록에서 바로 계산한다(`backend/league/standings.py`). 캐시는 아직 적용하지 않았다. 구현한 화면은 홈, 일정·결과, 경기 상세(프리뷰 포함), 순위, 팀, 선수, 기사(`/news`), 검색(`/search`, 머리글 자동완성), 실시간 경기(`/matches/{키}/live`, 홈의 "진행 중 경기")이다. 실시간 API는 `GET /api/live`, `GET /api/live/{키}`(현재 상태와 지금까지의 모든 득점), `GET /api/live/{키}/stream`(SSE)이다.
 
 ---
 
@@ -381,7 +395,7 @@ erDiagram
     bigint away_team_id FK
     timestamptz scheduled_at
     varchar venue
-    varchar status "SCHEDULED, LIVE, FINISHED, CONFIRMED"
+    varchar status "SCHEDULED, LIVE, FINISHED, CONFIRMED, CANCELLED"
     smallint home_sets
     smallint away_sets
     smallint duration_min
@@ -597,6 +611,13 @@ erDiagram
 - 선수 백분위는 같은 시즌·대회·성별·포지션의 순위 자격 선수(팀 세트의 1/3 이상 출전) 안에서 계산하고 `percentiles`(JSON)에 둔다.
 - 마트는 매 실행마다 전체 시즌으로 다시 계산해 한 트랜잭션으로 교체한다(Elo가 전체 이력에 의존). `kovo_daily`·`kovo_postgame`·`kovo_backfill`의 정제 다음 단계로 실행된다.
 
+구현 메모 — 경기 결과 예측 (2026-11-04, `spark_jobs/build_features.py`, `train_model.py`, `predict_matches.py`, DAG `ml_weekly_retrain`·`ml_daily_predict`):
+- 피처는 경기마다 **그 경기 시작 전 정보만** 쓴다(팀별 기록에서 시작 시각 이전의 마지막 상태를 붙이는 as-of 조인). 경기 전 Elo 차이·Elo 확률, 최근 5경기 승률·세트 득실, 시즌 누적 공격 성공률·리시브 효율·세트당 블로킹·서브·범실, 휴식일, 최근 2년 상대 전적(평활), 포스트시즌·성별.
+- 목표는 홈팀 기준 세트 스코어 6가지(3:0~0:3). 승리 확률 = P(3:0)+P(3:1)+P(3:2). Spark MLlib 다항 로지스틱 회귀·랜덤 포레스트 중 Hyperopt가 고른다(시도마다 MLflow 하위 Run).
+- 시간순 분할: 시험 = 최근 완결 시즌, 검증 = 그 앞 두 시즌, 학습 = 나머지. 첫 모델(v1): 2025-26 시험 시즌 적중률 64.3%, Log Loss 0.653 (Elo만 쓸 때 62.4%, 0.668).
+- 등록: MLflow `match-winner`. 현재 champion의 설정(모델 종류·하이퍼파라미터)과 새로 찾은 설정을 **같은 학습 데이터로 학습해 같은 시험 시즌으로 채점**하고, 더 좋은 쪽(같으면 새 설정)으로 전체 시즌을 학습해 새 `champion`으로 등록한다. 그래서 서비스 모델은 늘 최신 데이터로 학습되고, 설정은 실제로 더 나을 때만 바뀐다. 이전 실행이 기록한 수치는 피처·시즌이 바뀌면 비교할 수 없어서 쓰지 않는다(2026-11-04 변경).
+- 예측은 시작 전 경기에만 저장하고, 끝나면 `is_correct`를 채운다. 화면의 적중률은 실제 경기 전 예측만 센다.
+
 ### 2.3 기사·회원·운영 도메인
 
 ```mermaid
@@ -687,6 +708,31 @@ erDiagram
 | `articles` | `title`(text), `summary`(text), `publisher`(keyword), `published_at`(date), `team_codes`(keyword[]), `player_codes`(keyword[]), `url`(keyword) | nori(한글 형태소), 제목은 edge n-gram 보조 필드 | 기사 검색, 팀·선수 필터 |
 | `entities` | `type`(team/player), `name`(text + `search_as_you_type`), `code`(keyword), `team_name`, `position`, `status` | nori + 초성 검색용 보조 필드(선택) | 통합 검색 자동완성 |
 | `logs-*` | Filebeat 기본 필드, `service`, `level`, `message` | 기본 | 운영 로그 (Kibana) |
+
+구현 메모 — 기사·검색·운영 대시보드 (2026-11-04):
+- **수집** (`collectors/collectors/news.py`, DAG `news_collect` 매시 5분): 연합뉴스·뉴시스·동아일보·한국경제·한겨레 스포츠 RSS(robots.txt 허용 경로) + 네이버 뉴스 검색 API(키가 있을 때). 배구 낱말(배구, V리그, 팀 별칭 등; "지배구조" 같은 "배구조"는 제외)이 제목·요약에 있는 기사만, 제목·요약 160자·언론사·링크·발행 시각만 `news.article`에 보낸다. 일부 RSS는 본문 전체를 주므로 발행 전에 자른다(NFR-02, NFR-06). 한 피드가 실패해도 나머지는 계속하고, 모두 실패할 때만 실패.
+- **article-enricher** (`flink_jobs/article_enricher.py`, PyFlink DataStream): URL로, 다음에 정규화한 제목(앞의 [말머리]와 (종합) 등 제거, 10자 미만은 제외)으로 키를 나눠 7일 TTL 상태로 첫 건만 통과시킨다. 태그는 `article_tags.py`: 팀은 현재 이름+별칭, 선수는 최근 두 시즌 출전 선수(마지막 경기의 팀). 두 글자 이름은 그 선수의 팀이 함께 나올 때만, 동명이인은 팀으로 가려지지 않으면 태그하지 않는다. PostgreSQL `article`·`article_team`·`article_player`와 Elasticsearch `articles`(별칭 → `articles-v2`, 문서 id = sha1(url))에 upsert하므로 재처리해도 결과가 같다. 체크포인트는 `/flink/checkpoints/article-enricher`, `flink-job-keeper`가 지킨다.
+- **분석기**: `ko` = nori(혼합 분해) + 품사 필터 + 읽기 변환, `bigram` = 2글자 n-gram. "IBK기업은행"처럼 영문·한글이 붙은 낱말은 표준 토크나이저의 CJK bigram이 만들어지지 않아 n-gram 토크나이저를 쓴다(그래서 "기업은행"으로도 찾는다).
+- **entities** (`spark_jobs/index_entities.py`, `kovo_daily`의 마트 다음): HDFS `/curated/kovo`에서 팀·선수의 최신 이름·팀·포지션과 최근 1년·통산 경기 수를 계산해 elasticsearch-hadoop으로 `entities-<시각>`에 쓰고, 건수를 확인한 뒤 별칭 `entities`를 옮기고 이전 색인을 지운다. 자동완성 순서는 `weight`(현재 팀 > 최근 1년 출전 많은 선수 > 통산).
+- **API**: `GET /api/articles`(PostgreSQL), `GET /api/search`, `GET /api/search/suggest`(Elasticsearch, 장애 시 503). 강조 표시는 `encoder: html`로 본문을 이스케이프한 뒤 `<mark>`만 넣는다.
+- **Kibana** (`infra/kibana/build_dashboard.py` → `dashboard.ndjson`, `kibana-setup`이 import): 수집 성공률·실패·건수(`ops.collection-log`를 Filebeat Kafka 입력으로 `ops-collection-*`), Kafka 컨슈머 랙, Airflow DAG 소요·시작 지연·태스크 대기(Metricbeat sql 모듈 → `metrics-volley`), 서비스별 오류 로그(`logs-volley-*`, 줄 내용으로 `log.level` 판정), 언론사별 기사 저장. 컨슈머 랙은 `kafka-lag` 서비스가 쓴다: Flink KafkaSource는 그룹 멤버로 참여하지 않고 위치만 커밋해서 Metricbeat kafka 모듈에 `raw-archiver`·`article-enricher`가 나오지 않기 때문이다.
+
+### 2.6 전력 분석 확장 (2026-11-05 구현)
+
+| 테이블 | 고유 제약 | 작성 | 내용 |
+|---|---|---|---|
+| `player_type` | (`gender`, `cluster_no`) | Spark `player_types.py` (매번 전체 교체) | 선수 유형: 이름, 주 포지션, 특징(`traits`), 중심(`centroid`, z), 크기, k, 실루엣, MLflow run |
+| `player_style` | (`player_id`, `season_id`) | 〃 | 선수 시즌의 유형, 13개 특징값과 z, 같은 시즌·역대 유사 선수 5명(JSON) |
+| `prediction_backtest` | (`match_id`, `model_version_id`) | Spark `train_model.py` | 모델 버전별 walk-forward 예측(그 시즌 이전만 학습)과 같은 경기의 Elo 확률, 실제 결과 |
+| `team_season_summary` 추가 열 | - | Spark `build_marts.py` | `attack_after_good_receive`·`attack_after_poor_receive`(리시브 직후 첫 공격 성공률), `clutch_rallies`·`clutch_win_rate`(20:20 이후 랠리) |
+
+구현 메모:
+- **팀 강약점 (ANL-02, WEB-06)**: 팀 화면 레이더. 8개 지표(공격 성공률, 리시브 효율, 블로킹, 서브 에이스, 디그, 범실, 사이드아웃, 브레이크)마다 리그 팀 중 순위를 0~100점(1위 100, 꼴찌 0, 범실은 적을수록 높음)으로 바꿔 그린다. 50 점선이 리그 중간. 같은 내용을 강점·약점 문장과 리그 평균 비교표로도 보여준다.
+- **선수 유형 (ANL-06, WEB-07)**: `player_types.py`가 정규리그 선수 시즌(팀 세트의 1/3 이상, 10세트 이상)마다 13개 특징을 만든다. 세트당 득점·공격 시도·오픈(퀵오픈 포함)·속공·후위 공격·서브 에이스·블로킹·리시브·디그·세트·범실, 그리고 공격 성공률·리시브 효율(시도가 적으면 리그 평균 쪽으로 당기는 축소 추정: 평균 시도 20개를 더한 것처럼 계산). 성별마다 표준화 후 Spark MLlib K-means를 k=4~9로 돌리고, 실루엣이 최고값의 90% 이상인 가장 큰 k를 고른다(모든 k를 MLflow `player-types`에 기록). 30세트 이상 선수로만 학습하고 나머지는 배정만 한다(`provisional`). 유형 이름은 주 포지션 + 같은 포지션의 다른 유형과 다른 점(그 포지션 최다 득점이면 "주포형", 아무것도 두드러지지 않으면 "보조형"·"균형형"). 유사 선수는 표준화된 특징의 거리로 같은 시즌·역대 각 5명이고, 유사도는 같은 성별 모든 선수 쌍 중 그보다 먼 쌍의 비율(0~100)이다. 2021–22 시즌(018)까지의 포지션 코드(L 레프트, C 센터, R 라이트, Li 리베로)는 정제 단계(`curate_kovo.py`)에서 현재 코드(OH, MB, OP, L, S)로 바꾼다.
+- **선수 폼 (ANL-08)**: `backend/analytics/form.py`. 최근 5경기와 그 전 경기(3경기 이상)를 세트당 득점·공격 성공률·리시브 효율로 비교한다. 차이를 표준오차로 나눈 값이 1.64 이상이고 차이가 충분히 클 때(세트당 0.5점, 5%p)만 상승·하락이라 한다. 선수 화면 "최근 폼", 팀 화면 "선수 폼 변화".
+- **예측 검증 (ANL-10)**: `train_model.py`가 등록 후 고른 설정으로 최근 4시즌을 walk-forward로 예측해 `prediction_backtest`와 MLflow(`backtest_{시즌}_*`)에 남긴다. `/api/predictions`·화면 `/predictions`는 시즌별 적중률·Log Loss(모델 vs Elo), 확신도 구간별 예측 확률 대 실제 적중률, 이번 시즌 실제 예측 결과를 보여준다.
+- **모델 피처 추가 (ANL-03)**: 최근 5경기·시즌 누적 세트당 점수 차(`form_pointdiff`, `pointdiff`). 기존 규칙대로 챔피언 설정과 같은 데이터에서 비교해 나은 쪽이 새 챔피언이 된다.
+- **상황별 효율 (ANL-11)**: 리시브 정확(`RR exc`) 후 첫 공격 성공률과 그 외 리시브 후 성공률, 양 팀 20점(5세트 10점) 이상에서 시작한 랠리 승률. 팀 화면 리그 평균 비교표에 함께 나온다.
 
 ---
 
@@ -829,10 +875,17 @@ flowchart LR
 | 단계 | 내용 |
 |---|---|
 | 3.1 파싱 | 원본 JSON을 필요한 필드만 명시한 스키마로 읽는다. 같은 항목을 다시 수집한 경우 가장 최근 것만 쓴다(일정·경기 상세는 `시즌-경기번호`, 문자중계는 세트별 가장 최근 수집 실행). 경기·세트 점수는 일정, 선수·팀 기록은 경기 상세, 랠리는 문자중계에서 가져온다 |
-| 3.2 품질 검사 | `SET_COUNT_MISMATCH`(세트 스코어와 세트별 점수 불일치), `MISSING_BOX_SCORE`, `MISSING_RALLY`, `RALLY_SCORE_MISMATCH`(랠리로 센 점수 ≠ 공식 점수), `BOX_SCORE_MISMATCH`(팀 합계 ≠ 선수 합). 앞의 네 가지가 있으면 경기는 `CONFIRMED`가 되지 않고 `FINISHED`로 남는다 |
+| 3.2 보정·품질 검사 | 먼저 관리자 보정(ADM-03, `data_correction`)을 적용하고 검사한다(PIPE-10). **오류**(경기가 `CONFIRMED`가 되지 않고 `FINISHED`로 남음): `SET_COUNT_MISMATCH`(세트 스코어와 세트별 점수 불일치), `INVALID_SET_SCORE`(세트 점수가 25점·5세트 15점, 2점 차 규칙에 맞지 않음), `MISSING_BOX_SCORE`, `MISSING_RALLY`, `RALLY_SCORE_MISMATCH`(랠리로 센 점수 ≠ 공식 점수), `STAT_RANGE`(성공·범실이 시도보다 많음), `MISSING_VALUE`(팀 코드·경기 날짜·선수 코드 누락). **경고**: `BOX_SCORE_MISMATCH`(팀 합계 ≠ 선수 합), `POINTS_MISMATCH`(팀 득점 ≠ 세트 점수 합), `PLAYER_POINTS_MISMATCH`(선수 득점 ≠ 공격+블로킹+서브, 2008-09 시즌부터. 그 전 시즌은 KOVO 득점 정의가 달라 행의 1/3이 어긋난다), `PLAYER_NAME_MISSING`(문자중계에만 나온 선수). 결과는 `staging.quality_issue` → `quality_issue`(아래 구현 메모) |
 | 3.3 정제 테이블 | HDFS `/curated/kovo/{테이블}/season_code=…/`(Parquet, 처리한 시즌만 교체) → PostgreSQL `staging` 스키마(JDBC) → 병합 SQL 한 트랜잭션으로 서빙 테이블에 upsert. 다시 실행해도 결과와 id가 같다 |
 
 랠리 승자는 `rgrade = +1` 이벤트의 팀이다(요구사항 부록 A). 이 규칙으로 계산한 진행 점수가 2025-26 시즌 모든 세트의 공식 점수와 일치했다. 2025-26 + 2026-27 시즌 처리 시간은 약 2분 20초다(YARN 실행기 1개).
+
+구현 메모 — 데이터 품질·보정 (2026-11-05, PIPE-10·ADM-03, `backend/ops`):
+- `quality_issue`: 검사 하나가 한 행(시즌·경기·세트·검사·대상 코드). 정제 실행마다 그 시즌에서 찾은 문제를 upsert하고, 더는 나오지 않는 문제는 `RESOLVED`로 바꾼다. 관리자가 `ACKNOWLEDGED`(확인함: KOVO 원천에도 없음 등)로 표시하면 다음 실행에서도 유지된다. Django 관리 화면 "품질 검사 결과"에서 상태·메모를 바꾸고, 고칠 수 있는 문제는 보정 화면으로 바로 간다.
+- `data_correction`: 선수(이름·포지션·키 등)·팀(이름·홈 경기장)·경기(세트 스코어·관중·심판 등)·세트 점수·선수/팀 경기 기록의 한 항목을 근거와 함께 고친다. 저장하면 서빙 테이블에 바로 반영되고(원래 값은 `source_value`에 남음, 끄면 되돌림), Spark 정제가 매번 같은 보정을 적용하므로 재수집해도 유지되고 마트(Elo·시즌 기록)에도 들어간다. 경기 단위 보정이 바뀐 시즌은 다음 날 `kovo_daily`가 다시 정제한다. 보정은 지우지 않고 끈다(이력 유지).
+- `kovo_daily`의 `quality_gate`: 최근 7일 경기에 미해결 오류가 있거나, 정규리그 경기가 시작 6시간 뒤에도 결과가 없으면 실패한다(재시도 없음). 경고와 확인함은 실패시키지 않는다.
+- 경기 상세 API의 `data_notes`: 그 경기의 미해결·확인함 오류(예: "3·4세트 문자중계 없음")와 보정한 항목 수. 화면은 점수판 아래에 짧게 안내한다.
+- Kibana "배구 파이프라인 운영"에 검사별 미해결 건수와 미해결 오류 수 패널(Metricbeat sql 모듈이 서빙 DB를 5분마다 조회).
 
 ---
 
@@ -939,6 +992,15 @@ sequenceDiagram
   Note over LC,FL: 비시즌에는 경기 재생기가 LC 대신 kovo.live에 발행 (PIPE-11)
 ```
 
+구현 메모 — 실시간 경기 (2026-11-04):
+- **실시간 수집기** (`collectors/collectors/live.py`, compose `live-collector`, `stream` 프로필): 1분마다 DB에서 10분 안에 시작하거나 진행 중인 경기(`SCHEDULED`·`LIVE`, 시작 4시간 이내)를 읽고, 15초마다 경기별로 현재 세트의 `/stat/real-time`을 요청한다. 세트 피드에서 아직 보내지 않은 위치부터의 이벤트만 `kovo.live`에 보낸다(`payload = {match, set, start, events, mode: LIVE, session: live}`). 세트 피드에 `ET`가 있으면 다음 세트로, 한 팀이 3세트를 이기면 끝낸다. Kafka가 받았다고 확인한 뒤에만 위치를 넘기므로 실패하면 같은 이벤트를 다시 보낸다. 재시작하면 `live_match_state.last_event_seq`와 `set_scores`에서 이어 간다. KOVO 요청 간격은 Airflow와 같은 잠금 파일(`kovo-rate` 볼륨)을 써서 합쳐서 초당 1회 이하다(NFR-01).
+- **경기 재생기** (`collectors/collectors/replay.py`, DAG `live_replay`): 원천 HDFS 파일에서 경기 한 건을 찾으려면 모든 수집일 파일을 읽어야 해서, Spark가 원천에서 만든 `rally_event`를 읽어 KOVO 피드 모양으로 되돌린다. 랠리 하나를 메시지 하나로 보내고, 간격은 세트 소요 시간(`set_score.duration_min`)을 랠리 수로 나눈 값 ÷ 배속이다. `mode: REPLAY`와 새 `session`을 붙인다.
+- **이벤트 순번**: `seq = 세트 × 10000 + 세트 피드 안의 위치`. KOVO는 세트 피드 뒤에 이어 붙이기만 하므로 같은 이벤트는 같은 순번이 되고, Flink는 마지막 순번 이하를 버린다.
+- **live-metrics** (`flink_jobs/live_metrics.py` + 계산 `live_state.py`): 경기별 keyed state(JSON, TTL 12시간 — 경기 끝에 바로 지우지 않는 것은 늦게 도착한 중복 메시지가 상태를 처음부터 다시 만들지 않게 하기 위해서다). 득점은 `rgrade = +1` 이벤트의 팀, 서브권은 직전 득점 팀, 세트 지표는 공격(`A*` 시도·`suc` 성공), 서브(`VV`·`VS`의 `suc` 에이스·`er*` 범실), 블로킹(`BB suc`), 범실(`er*` 결과)이다. 지난 경기를 재생해 경기 박스스코어와 공격 시도·성공, 서브 에이스·범실, 블로킹, 범실이 모두 같음을 확인했다. 다른 `session`이 오면 그 경기를 처음부터 다시 계산하고 그 경기의 실시간 행을 지운다. 출력은 PostgreSQL upsert(`live_match_state`, `live_set_metric`, 그리고 점수 추이용 **`live_rally`**(득점 1건 = 1행, 2.2절에 없던 테이블로 추가))와 Kafka `live.metrics`(키 = 경기). DataStream의 Kafka 싱크는 키를 따로 지정할 수 없어 Flink SQL Kafka 커넥터(`key.fields`)로 쓴다. 실제 경기(`mode = LIVE`)만 `match.status`를 `LIVE`·`FINISHED`로 바꾸고, 배치 병합(`merge_kovo.sql`)은 일정에 결과가 아직 없을 때 이를 `SCHEDULED`로 되돌리지 않는다.
+- **실시간 승리 확률 (ANL-07)**: 서브하는 쪽별 랠리 승리 확률을 두 팀의 이번 시즌 사이드아웃·브레이크 비율로 정하고(이번 시즌 경기 수가 적으면 지난 시즌 값과 경기 수 5개 기준으로 섞는다), 동적 계획법으로 세트(25점·5세트 15점, 2점 차, 듀스는 닫힌 식)와 경기(3세트 선승) 승리 확률을 구한다. 세트 사이에는 서브권을 모르므로 양쪽 평균을 쓴다.
+- **SSE 게이트웨이** (`backend/live/hub.py`, `views.py`, compose `django-sse`: Uvicorn): 프로세스마다 Kafka 컨슈머 하나가 `live.metrics`의 모든 파티션을 끝에서부터 읽어 경기별로 열린 스트림에 나눠 준다(소비자 그룹 오프셋을 쓰지 않는다. 접속하면 DB에서 현재 상태를 먼저 보내기 때문에 지난 메시지가 필요 없다). 스트림은 구독을 먼저 걸고 `snapshot`을 보낸 뒤 `update`를 이어 보내며, 15초마다 `: ping`을 보낸다. 느린 브라우저는 오래된 업데이트를 버린다(업데이트마다 전체 상태가 들어 있다). 개발 서버에서는 Vite가 `/api/live/{키}/stream`만 `django-sse`로 넘긴다.
+- **지연(NFR-14)**: 재생으로 잰 수집 시각 → DB 저장은 평균 약 3초(120배속에서도 최대 4.5초), SSE 전달은 그 직후다.
+
 ### 4.4 시퀀스 다이어그램: 주간 재학습과 모델 교체
 
 ```mermaid
@@ -976,6 +1038,7 @@ stateDiagram-v2
   state "진행 중 (LIVE)" as LIVE
   state "종료 (FINISHED)" as FINISHED
   state "확정 (CONFIRMED)" as CONFIRMED
+  state "미진행 (CANCELLED)" as CANCELLED
 
   [*] --> SCHEDULED: 일정 수집 (kovo_daily)
   SCHEDULED --> LIVE: 실시간 수집기가 경기 시작 이벤트(ST) 수신
@@ -983,8 +1046,12 @@ stateDiagram-v2
   SCHEDULED --> FINISHED: 실시간 수집 실패 시 결과 수집으로 전환
   FINISHED --> CONFIRMED: kovo_postgame 정제 완료
   CONFIRMED --> CONFIRMED: 기록 정정 감지 시 재처리 (COL-09)
+  SCHEDULED --> CANCELLED: 예정일 이틀 뒤에도 결과 없음 (시리즈 조기 종료 등, 정제 단계)
   CONFIRMED --> [*]
+  CANCELLED --> [*]
 ```
+
+품질 검사(문자중계 누락, 세트 점수 불일치, 선수 기록 없음)를 통과하지 못한 경기는 결과가 있어도 `FINISHED`에 머문다. 원천에 기록이 없는 경우는 `collectors/README.md`의 "알려진 원천 누락"에 둔다.
 
 ### 4.6 상태 다이어그램: 모델 버전 별칭
 
@@ -1000,6 +1067,10 @@ stateDiagram-v2
   CHAMPION --> ARCHIVED: 새 champion으로 교체됨
   ARCHIVED --> CHAMPION: 관리자 수동 복구 (ADM-05)
 ```
+
+구현 메모 — 수집 현황·수동 실행 (2026-11-06, ADM-01·02, `ops/jobs.py`, `ops/admin.py`, `ops/forms.py`): 별도 REST API 대신 Django 관리 화면 두 개로 만들었다(관리자 권한 계정만, 이 PC에서만 열림, NFR-32·34). "수집 현황"은 Airflow REST API(`/api/v2/dags`, `/dags/{id}/dagRuns`)로 작업별 최근 12회 실행과 7일 실패 수를, Elasticsearch `ops-collection-*`(수집기가 Kafka `ops.collection-log`에 남긴 시작·결과)로 수집기별 성공·실패·끝나지 않은 실행을 보여주고, 그 아래에 `job_alert`(PIPE-09) 목록을 둔다. "수동 실행"은 종류별 양식이 입력을 먼저 검사하고(경기 번호·날짜 범위·시즌 형식, 재생할 경기가 끝났는지) Airflow `POST /dags/{id}/dagRuns`로 설정과 함께 실행한 뒤 `manual_run`에 남긴다. 일시 중지된 DAG는 실행이 대기열에만 쌓이므로 거절한다. Airflow·Elasticsearch가 꺼져 있으면 그 부분만 오류를 표시한다.
+
+구현 메모 — 모델 관리 (2026-11-05, ADM-05): Django 관리 "모델 관리"(`analytics/admin.py`, `analytics/registry.py`)가 MLflow REST API로 `match-winner`의 등록 버전을 읽어 버전별 학습·시험 시즌, 시험 정확도·로그 손실(같은 경기의 Elo 기준선과 함께), 실전 적중(경기 전 예측만, `match_prediction`)을 보여준다. 최고 관리자가 버전과 사유를 골라 `champion` 별칭을 옮기면 `model_change`에 누가·언제·왜를 남기고, Airflow REST API로 `ml_daily_predict`를 바로 실행해 다가오는 경기 예측을 새 모델로 다시 만든다. MLflow·Airflow가 꺼져 있으면(batch 프로필) 화면에 그렇게 표시한다. 주간 재학습은 그때의 `champion`과 새 설정을 같은 데이터로 비교하므로, 수동으로 고른 버전도 같은 규칙으로 평가된다.
 
 ### 4.7 클래스 다이어그램: 수집기 모듈
 

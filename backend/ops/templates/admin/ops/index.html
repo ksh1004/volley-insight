@@ -1,0 +1,13 @@
+{% extends "admin/index.html" %}
+{% comment %}PIPE-09: the admin sees unchecked job failures as soon as they open the admin.{% endcomment %}
+{% load ops_admin %}
+{% block content %}
+{% open_job_alerts as n %}
+{% if n %}
+  <p class="errornote" role="alert">
+    확인하지 않은 작업 실패가 {{ n }}건 있습니다.
+    <a href="{% url 'admin:ops_jobalert_changelist' %}?status__exact=OPEN">수집 현황에서 보기</a>
+  </p>
+{% endif %}
+{{ block.super }}
+{% endblock %}

@@ -1,0 +1,58 @@
+{% extends "admin/change_list.html" %}
+{% comment %}ADM-02 수동 실행: one form per kind of run, then the log of runs started here.{% endcomment %}
+
+{% block extrastyle %}{{ block.super }}
+<style>
+  .runs { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin: 0 0 24px; }
+  .runs .module { margin: 0; }
+  .runs form { padding: 8px 12px 12px; display: grid; gap: 10px; }
+  .runs .field { display: grid; gap: 4px; }
+  .runs .field.check { grid-template-columns: auto 1fr; align-items: start; column-gap: 8px; }
+  .runs .field.check .helptext { grid-column: 2; }
+  .runs label { font-weight: 700; }
+  .runs input[type=text], .runs input[type=number], .runs select { width: 100%; box-sizing: border-box; }
+  .runs .helptext, .runs .what { color: var(--body-quiet-color); font-size: 12px; margin: 0; }
+  .runs .errorlist { margin: 0; }
+  .runs input[type=submit] { justify-self: start; min-height: 36px; }
+</style>
+{% endblock %}
+
+{% block content %}
+{% if not can_run %}
+  <p class="errornote">작업을 실행할 권한이 없습니다. 실행 기록만 볼 수 있습니다.</p>
+{% endif %}
+<p class="help" style="color: var(--body-quiet-color);">실행하면 Airflow에 바로 전달되고, 같은 작업이 이미 돌고 있으면 그 실행이 끝난 뒤 시작합니다.
+  진행 상황은 <a href="{{ airflow_ui }}" target="_blank" rel="noopener">Airflow</a>, 결과와 실패는
+  <a href="{% url 'admin:ops_jobalert_changelist' %}">수집 현황</a>에서 봅니다. KOVO 요청은 모든 작업이 함께 초당 1회를 지킵니다.</p>
+
+<div class="runs">
+  {% for kind, form in forms.items %}
+  <section class="module" aria-labelledby="h-{{ kind }}">
+    {% if kind == "now" %}<h2 id="h-{{ kind }}">예약 작업 지금 실행</h2>
+      <p class="what" style="padding: 8px 12px 0;">정해진 시각을 기다리지 않고 한 번 더 돌립니다. 예: 경기 기록이 늦게 올라와 바로 반영하고 싶을 때(경기 후 기록).</p>
+    {% elif kind == "reprocess" %}<h2 id="h-{{ kind }}">경기·날짜·시즌 재처리</h2>
+      <p class="what" style="padding: 8px 12px 0;">{{ dags.kovo_reprocess.what }}. 대상 시즌 전체를 저장된 원천부터 다시 정제하고(보정·품질 검사 포함) 분석 마트를 다시 만듭니다.</p>
+    {% elif kind == "backfill" %}<h2 id="h-{{ kind }}">과거 시즌 수집</h2>
+      <p class="what" style="padding: 8px 12px 0;">{{ dags.kovo_backfill.what }}.</p>
+    {% else %}<h2 id="h-{{ kind }}">경기 재생</h2>
+      <p class="what" style="padding: 8px 12px 0;">{{ dags.live_replay.what }}. 재생 중에는 사이트의 그 경기 실시간 화면에서 볼 수 있습니다. 경기 기록은 바뀌지 않습니다.</p>
+    {% endif %}
+    <form method="post" action="{% url 'admin:ops_manualrun_run' %}" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="kind" value="{{ kind }}">
+      {{ form.non_field_errors }}
+      {% for field in form %}
+        <div class="field{% if field.widget_type == 'checkbox' %} check{% endif %}">
+          {% if field.widget_type == 'checkbox' %}{{ field }} {{ field.label_tag }}{% else %}{{ field.label_tag }} {{ field }}{% endif %}
+          {% if field.help_text %}<p class="helptext" id="{{ field.auto_id }}_help">{{ field.help_text }}</p>{% endif %}
+          {{ field.errors }}
+        </div>
+      {% endfor %}
+      <input type="submit" class="default" value="실행" {% if not can_run %}disabled{% endif %}>
+    </form>
+  </section>
+  {% endfor %}
+</div>
+<h2>실행 기록</h2>
+{{ block.super }}
+{% endblock %}

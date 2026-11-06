@@ -16,9 +16,10 @@ SCHEDULE_TOPIC = "kovo.schedule"
 MATCH_TOPIC = "kovo.match"
 RALLY_TOPIC = "kovo.rally"
 GENDERS = {"1": "men", "2": "women"}
-# Not real game leagues: 200 season totals, 801 all-star game, 901 pre-season exhibition.
+# Not real game leagues: 200 season totals, 801 all-star game, 901 pre-season exhibition, 903 practice matches
+# (seen in 2014-15).
 # Game leagues: 201 regular, 202 play-off, 203 championship, 204 semi play-off.
-SKIP_LEAGUES = {"200", "801", "901"}
+SKIP_LEAGUES = {"200", "801", "901", "903"}
 # One set has about 250-300 events, so 500 returns a whole set in one request.
 RALLY_PAGE_SIZE = 500
 MAX_PAGES_PER_SET = 10

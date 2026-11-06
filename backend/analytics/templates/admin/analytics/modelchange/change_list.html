@@ -1,0 +1,72 @@
+{% extends "admin/change_list.html" %}
+{% comment %}ADM-05: registered versions of the match model on top of the switch log.{% endcomment %}
+
+{% block extrastyle %}{{ block.super }}
+<style>
+  .models { margin: 0 0 24px; }
+  .models table { width: 100%; }
+  .models td.num, .models th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .models .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 700;
+                 background: var(--selected-row); color: var(--body-fg); border: 1px solid var(--hairline-color); }
+  .models .tag.champion { background: var(--message-success-bg); }
+  .models .better { font-weight: 700; }
+  .models .muted { color: var(--body-quiet-color); }
+  .models form { margin-top: 12px; display: grid; gap: 8px; max-width: 720px; }
+  .models textarea { width: 100%; min-height: 3em; box-sizing: border-box; }
+  .models .help { color: var(--body-quiet-color); margin: 0; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="models module">
+  <h2>{{ model_name }} 등록 버전</h2>
+  {% if registry_error %}
+    <p class="errornote">MLflow를 읽지 못했습니다: {{ registry_error }}</p>
+  {% else %}
+  <form method="post" action="{% url 'admin:analytics_modelchange_promote' %}"
+        onsubmit="return confirm('선택한 버전을 서비스 모델로 바꿀까요? 다가오는 경기 예측을 새 모델로 다시 만듭니다.');">
+    {% csrf_token %}
+    <table>
+      <thead><tr>
+        <th scope="col">선택</th><th scope="col">버전</th><th scope="col">상태</th><th scope="col">등록</th>
+        <th scope="col">학습 시즌</th><th scope="col">시험 시즌</th>
+        <th scope="col" class="num">시험 정확도</th><th scope="col" class="num">로그 손실 (Elo)</th>
+        <th scope="col" class="num">실전 적중</th>
+      </tr></thead>
+      <tbody>
+      {% for v in versions %}
+        <tr>
+          <td><input type="radio" name="version" value="{{ v.version }}" id="v{{ v.version }}"
+                     {% if v.version == champion %}disabled{% endif %} {% if not can_switch %}disabled{% endif %}
+                     aria-label="v{{ v.version }} 선택"></td>
+          <td><label for="v{{ v.version }}"><b>v{{ v.version }}</b></label></td>
+          <td>{% for a in v.aliases %}<span class="tag {{ a }}">{% if a == "champion" %}서비스 중{% elif a == "candidate" %}후보{% else %}{{ a }}{% endif %}</span> {% empty %}<span class="muted">보관</span>{% endfor %}</td>
+          <td>{{ v.created|date:"Y-m-d H:i" }}</td>
+          <td>{{ v.train_seasons|default:"-" }}</td>
+          <td>{{ v.test_season|default:"-" }}</td>
+          <td class="num">{% if v.test_accuracy is not None %}{{ v.test_accuracy_pct|floatformat:1 }}%{% else %}-{% endif %}</td>
+          <td class="num"><span class="{% if v.beats_elo %}better{% endif %}">{{ v.test_log_loss|floatformat:4|default:"-" }}</span>
+              <span class="muted">({{ v.elo_test_log_loss|floatformat:4|default:"-" }})</span></td>
+          <td class="num">{% if v.live_n %}{{ v.live_hits }}/{{ v.live_n }} ({{ v.live_pct|floatformat:1 }}%){% else %}<span class="muted">-</span>{% endif %}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="9">등록된 버전이 없습니다.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="help">시험 정확도·로그 손실: 학습에 쓰지 않은 시험 시즌 성적(로그 손실은 낮을수록 좋음, 괄호는 같은 경기의 Elo 기준선,
+      굵게 = Elo보다 나음). 실전 적중: 경기 전에 만든 예측만 센 결과.</p>
+    {% if can_switch and versions %}
+      <label for="reason"><b>바꾸는 사유</b> (기록에 남습니다)</label>
+      <textarea id="reason" name="reason" required minlength="5"
+                placeholder="예: v6이 이번 시즌 실전 적중률이 낮아 v5로 되돌림"></textarea>
+      <p class="help">서비스 모델(champion)을 바꾸면 바로 다가오는 경기 예측을 새 모델로 다시 만듭니다.
+        매주 월요일 재학습은 지금 서비스 모델과 새 모델을 같은 데이터로 비교해서 더 나은 쪽을 고릅니다.</p>
+      <div><input type="submit" class="default" value="선택한 버전을 서비스 모델로"></div>
+    {% endif %}
+  </form>
+  {% endif %}
+</div>
+<h2>서비스 모델을 바꾼 기록</h2>
+{{ block.super }}
+{% endblock %}

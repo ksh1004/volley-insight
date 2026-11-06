@@ -118,3 +118,33 @@ class LeagueApiTest(TestCase):
         self.assertEqual(r["career"][0]["points"], 23)
         log = r["matches"][0]
         self.assertEqual((log["opponent"]["name"], log["result"], log["score"], log["home"]), ("한국전력", "W", "3:0", False))
+
+
+class PredictionApiTest(TestCase):
+    """Pre-match prediction, head-to-head and form in the match APIs (WEB-08)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from analytics.models import MatchPrediction, ModelVersion
+
+        cls.finished, cls.later = make_league()
+        mv = ModelVersion.objects.create(name="match-winner", version=1, mlflow_run_id="r1", alias="champion",
+                                         metrics={"test_accuracy": 0.64, "elo_test_accuracy": 0.62}, test_season="022")
+        MatchPrediction.objects.create(match=cls.later, model_version=mv, home_win_prob="0.6100",
+                                       set_score_probs={"3:0": 0.2, "3:1": 0.25, "3:2": 0.16, "2:3": 0.14, "1:3": 0.15, "0:3": 0.1},
+                                       pred_home_sets=3, pred_away_sets=1, predicted_at=timezone.now())
+
+    def test_list_carries_the_prediction(self):
+        rows = {m["key"]: m for m in self.client.get("/api/matches", {"season": "022", "gender": "M"}).json()["results"]}
+        self.assertEqual(rows["022-10"]["prediction"]["home_win_prob"], 0.61)
+        self.assertIsNone(rows["022-3"]["prediction"])
+
+    def test_preview_has_prediction_head_to_head_and_form(self):
+        pv = self.client.get("/api/matches/022-10").json()["preview"]
+        self.assertEqual(pv["prediction"]["pred_sets"], [3, 1])
+        self.assertEqual(pv["prediction"]["model"]["test_season_years"], "2025-2026")
+        # 022-10 is 우리카드 (home) vs 한국전력; their earlier meeting 022-3 was won 3:0 by 우리카드 away
+        self.assertEqual((pv["head_to_head"]["total"], pv["head_to_head"]["wins"]["home"]), (1, 1))
+        self.assertEqual(pv["head_to_head"]["recent"][0]["score"], "3:0")
+        self.assertEqual([f["result"] for f in pv["home"]["form"]], ["W"])
+        self.assertEqual([f["result"] for f in pv["away"]["form"]], ["L"])

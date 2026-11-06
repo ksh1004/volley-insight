@@ -128,3 +128,38 @@ def test_raw_arrived_looks_at_the_next_day_after_midnight_kst():
 
 def test_empty_batches_need_no_wait():
     assert p.raw_arrived([{**BATCH, "count": 0}], http=FakeHdfs({}))
+
+
+def test_quality_gate_fails_on_open_errors_and_missing_results():
+    report = {"errors": [("023-5", 3, "MISSING_RALLY", "no play-by-play for this set"),
+                         ("023-6", 0, "MISSING_BOX_SCORE", "no match detail collected")],
+              "stale": [("023-7", "SCHEDULED")], "open": {"ERROR": 2, "WARNING": 9}}
+    assert p.gate_problems(report) == [
+        "023-5 set 3: MISSING_RALLY no play-by-play for this set",
+        "023-6 set -: MISSING_BOX_SCORE no match detail collected",
+        "023-7: started 6h+ ago, still SCHEDULED (result not collected)",
+    ]
+
+
+def test_quality_gate_passes_with_only_warnings():
+    assert p.gate_problems({"errors": [], "stale": [], "open": {"WARNING": 9}}) == []
+
+
+def test_parse_games_and_dates_for_reprocess():
+    assert p.parse_games("023-9, 023-10 22-5 023-9") == {"022": [5], "023": [9, 10]}
+    assert p.parse_games("") == {}
+    for bad in ("023", "023-x", "a-1", "023-0"):
+        try:
+            p.parse_games(bad)
+            raise AssertionError(bad)
+        except ValueError:
+            pass
+    assert p.parse_dates("2026-11-05") == (date(2026, 11, 5), date(2026, 11, 5))
+    assert p.parse_dates(" 2026-11-01 ~ 2026-11-05 ") == (date(2026, 11, 1), date(2026, 11, 5))
+    for bad in ("2026-11-05~2026-11-01", "2026-10-01~2026-11-05", "11/05"):
+        try:
+            p.parse_dates(bad)
+            raise AssertionError(bad)
+        except ValueError:
+            pass
+    assert p.merge_games({"023": [9]}, {"023": [10, 9], "022": [1]}) == {"022": [1], "023": [9, 10]}

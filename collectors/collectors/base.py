@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 class BaseCollector:
     name = "base"
     topic = ""
+    source = "kovo"  # envelope `source`
 
     def __init__(self, client, publisher):
         self.client = client
@@ -42,7 +43,7 @@ class BaseCollector:
         count = 0
         try:
             for endpoint, request_params, body in self.collect(**params):
-                envelope = make_envelope(source="kovo", endpoint=endpoint, params=request_params,
+                envelope = make_envelope(source=self.source, endpoint=endpoint, params=request_params,
                                          payload=body, collector=self.name, run_id=run_id)
                 self.publisher.publish(self.topic, self.key_of(endpoint, request_params, body), envelope)
                 count += 1

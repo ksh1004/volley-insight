@@ -1,6 +1,7 @@
 """Reads of the analysis marts for the team and player APIs."""
 from django.db.models import Avg
 
+from league.models import Season
 from matches.serializers import match_key
 
 from .models import PlayerSeasonSummary, TeamRating, TeamSeasonSummary
@@ -44,10 +45,75 @@ def team_play_rates(team, season):
     base = TeamSeasonSummary.objects.filter(competition__season=season, competition__league_code=REGULAR,
                                             team__gender=team.gender)
     mine = base.filter(team=team).first()
-    league = base.aggregate(sideout=Avg("sideout_rate"), brk=Avg("break_rate"))
-    return {"team": {"sideout_rate": _num(mine.sideout_rate) if mine else None,
-                     "break_rate": _num(mine.break_rate) if mine else None},
-            "league": {"sideout_rate": _num(league["sideout"]), "break_rate": _num(league["brk"])}}
+    fields = ["sideout_rate", "break_rate", "attack_after_good_receive", "attack_after_poor_receive", "clutch_win_rate"]
+    league = base.aggregate(**{f: Avg(f) for f in fields})
+    team_vals = {f: _num(getattr(mine, f)) if mine else None for f in fields}
+    team_vals["clutch_rallies"] = mine.clutch_rallies if mine else None
+    return {"team": team_vals, "league": {f: _num(league[f]) for f in fields}}
+
+
+# (key, label, lower is better) — the strength/weakness radar on the team page (ANL-02, WEB-06)
+PROFILE_AXES = [
+    ("attack_pct", "공격 성공률", False), ("receive_efficiency", "리시브 효율", False),
+    ("blocks_per_set", "블로킹", False), ("serve_aces_per_set", "서브 에이스", False),
+    ("digs_per_set", "디그", False), ("errors_per_set", "범실", True),
+    ("sideout_rate", "사이드아웃", False), ("break_rate", "브레이크", False),
+]
+
+
+def team_profile(team, season, totals):
+    """Each indicator of the team as a score among the league's teams: 100 = best, 0 = worst, 50 = middle.
+
+    `totals` are the season box-score sums of every team (league.queries.team_totals). Ties share the score.
+    """
+    from league.queries import rates
+
+    values = {t["code"]: rates(t) for t in totals}
+    for s in TeamSeasonSummary.objects.filter(competition__season=season, competition__league_code=REGULAR,
+                                              team__gender=team.gender).select_related("team"):
+        if s.team.code in values:
+            values[s.team.code].update(sideout_rate=_num(s.sideout_rate), break_rate=_num(s.break_rate))
+    games = next((t["games"] for t in totals if t["code"] == team.code), 0)
+    axes = []
+    for key, label, lower in PROFILE_AXES:
+        xs = [v.get(key) for v in values.values() if v.get(key) is not None]
+        mine = values.get(team.code, {}).get(key)
+        axis = {"key": key, "label": label, "lower_is_better": lower, "value": mine,
+                "league": round(sum(xs) / len(xs), 2) if xs else None, "teams": len(xs), "rank": None, "score": None}
+        if mine is not None and len(xs) >= 2:
+            better = sum(1 for x in xs if (x < mine if lower else x > mine))
+            ties = sum(1 for x in xs if x == mine) - 1
+            axis["rank"] = better + 1
+            axis["score"] = round(100 * (len(xs) - 1 - better - ties / 2) / (len(xs) - 1))
+        axes.append(axis)
+    return {"games": games, "axes": axes}
+
+
+def player_style(player, season):
+    """The player's type (K-means group) and most similar players for one season (ANL-06, WEB-07). None if the
+    player had too few sets that season."""
+    from league.models import Player, Team
+
+    from .models import PlayerStyle
+
+    s = PlayerStyle.objects.filter(player=player, season=season).select_related("type").first()
+    if not s:
+        return None
+    refs = s.similar_season + s.similar_all
+    names = dict(Player.objects.filter(code__in={r["player"] for r in refs}).values_list("code", "name"))
+    teams = dict(Team.objects.filter(code__in={r["team"] for r in refs}).values_list("code", "name"))
+    years = dict(Season.objects.filter(code__in={r["season"] for r in refs}).values_list("code", "years"))
+
+    def resolve(rows):
+        return [{"player": {"code": r["player"], "name": names.get(r["player"], r["player"])},
+                 "season": {"code": r["season"], "years": years.get(r["season"], "")},
+                 "team": {"code": r["team"], "name": teams.get(r["team"], r["team"])},
+                 "type": r["type"], "similarity": r["similarity"]} for r in rows]
+
+    t = s.type
+    return {"type": {"label": t.label, "position": t.position, "traits": t.traits, "size": t.size, "k": t.k},
+            "sets": s.sets, "provisional": s.provisional, "features": s.features, "z": s.z,
+            "similar_season": resolve(s.similar_season), "similar_all": resolve(s.similar_all)}
 
 
 def player_percentiles(player, season):
@@ -60,3 +126,71 @@ def player_percentiles(player, season):
               "dig_per_set", "set_per_set", "error_per_set"]
     return {"position": s.position, "qualified": s.qualified, "sets": s.sets,
             "values": {f: _num(getattr(s, f)) for f in fields}, "percentiles": s.percentiles or {}}
+
+
+# ---------------------------------------------------------------- match preview (WEB-08, ANL-03/04/10)
+def latest_prediction(match):
+    from .models import MatchPrediction
+
+    p = (MatchPrediction.objects.filter(match=match).select_related("model_version")
+         .order_by("-predicted_at").first())
+    if not p:
+        return None
+    mv = p.model_version
+    scored = MatchPrediction.objects.filter(model_version=mv, is_correct__isnull=False)
+    hits = scored.filter(is_correct=True).count()
+    return {
+        "home_win_prob": _num(p.home_win_prob), "set_score_probs": p.set_score_probs,
+        "pred_sets": [p.pred_home_sets, p.pred_away_sets], "predicted_at": p.predicted_at, "is_correct": p.is_correct,
+        "model": {"name": mv.name, "version": mv.version, "test_season": mv.test_season, "train_seasons": mv.train_seasons,
+                  "test_season_years": Season.objects.filter(code=mv.test_season).values_list("years", flat=True).first(),
+                  "test_accuracy": mv.metrics.get("test_accuracy"), "elo_test_accuracy": mv.metrics.get("elo_test_accuracy"),
+                  "test_log_loss": mv.metrics.get("test_log_loss"), "elo_test_log_loss": mv.metrics.get("elo_test_log_loss"),
+                  "live_scored": scored.count(), "live_hits": hits},
+    }
+
+
+def head_to_head(match, limit=5):
+    """All finished meetings of the two teams before this match (ANL-04)."""
+    from django.db.models import Q
+
+    from matches.models import Match
+
+    h, a = match.home_team_id, match.away_team_id
+    meetings = (Match.objects.filter(Q(home_team_id=h, away_team_id=a) | Q(home_team_id=a, away_team_id=h),
+                                     status__in=["FINISHED", "CONFIRMED"], scheduled_at__lt=match.scheduled_at)
+                .select_related("competition__season").order_by("-scheduled_at"))
+    wins = {"home": 0, "away": 0}
+    recent = []
+    for m in meetings:
+        winner = m.home_team_id if m.home_sets > m.away_sets else m.away_team_id
+        wins["home" if winner == h else "away"] += 1
+        if len(recent) < limit:
+            mine = m.home_team_id == h  # score from this match's home team point of view
+            recent.append({"match": match_key(m), "date": m.scheduled_at, "season": m.competition.season.years,
+                           "score": f"{m.home_sets}:{m.away_sets}" if mine else f"{m.away_sets}:{m.home_sets}",
+                           "winner": "home" if winner == h else "away"})
+    return {"total": len(meetings), "wins": wins, "recent": recent}
+
+
+def team_form(team, before, season, limit=5):
+    """Last `limit` results before a date, the current Elo, and season-to-date indicators."""
+    from django.db.models import Q
+
+    from matches.models import Match
+
+    games = (Match.objects.select_related("competition__season").filter(Q(home_team=team) | Q(away_team=team), status__in=["FINISHED", "CONFIRMED"],
+                                  scheduled_at__lt=before).order_by("-scheduled_at")[:limit])
+    form = []
+    for m in games:
+        home = m.home_team_id == team.id
+        won = (m.home_sets > m.away_sets) == home
+        form.append({"result": "W" if won else "L", "match": match_key(m),
+                     "score": f"{m.home_sets}:{m.away_sets}" if home else f"{m.away_sets}:{m.home_sets}"})
+    rating = (TeamRating.objects.filter(team=team, rated_on__lt=before.date()).order_by("-rated_on").first())
+    summary = TeamSeasonSummary.objects.filter(team=team, competition__season=season, competition__league_code=REGULAR).first()
+    fields = ["attack_success_rate", "receive_efficiency", "block_per_set", "serve_per_set", "dig_per_set",
+              "error_per_set", "sideout_rate", "break_rate"]
+    return {"form": form, "elo": _num(rating.rating) if rating else None,
+            "season": {f: _num(getattr(summary, f)) for f in fields} if summary else None,
+            "record": f"{summary.wins}승 {summary.losses}패" if summary else None}

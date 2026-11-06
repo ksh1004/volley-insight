@@ -16,9 +16,10 @@ import pendulum
 from airflow.exceptions import AirflowSkipException
 from airflow.sdk import dag, task
 
+from kovo_tasks import alerts
 from kovo_tasks import pipeline as p
 
-DEFAULT_ARGS = {"retries": 3, "retry_delay": timedelta(minutes=5)}
+DEFAULT_ARGS = alerts.default_args()
 
 
 @dag(
@@ -28,6 +29,7 @@ DEFAULT_ARGS = {"retries": 3, "retry_delay": timedelta(minutes=5)}
     catchup=False,
     max_active_runs=1,
     default_args=DEFAULT_ARGS,
+    on_failure_callback=alerts.on_dag_failure,
     tags=["kovo", "collect"],
     doc_md=__doc__,
 )

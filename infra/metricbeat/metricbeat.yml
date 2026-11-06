@@ -1,0 +1,56 @@
+# Pipeline metrics for the Kibana operations dashboard (ADM-04): Airflow delays, open data quality issues.
+#   -> data stream metrics-volley (Kafka consumer lag is written to the same stream by the kafka-lag service:
+#      Metricbeat's kafka module skips groups without live members, i.e. the Flink jobs' groups)
+metricbeat.modules:
+  # Airflow metadata DB, every 5 minutes: tasks and DAG runs that finished in the last 5 minutes
+  #   queue_delay_sec  task waited this long between queued and started (executor busy?)
+  #   start_delay_sec  DAG run started this long after it was due (scheduler behind?)
+  - module: sql
+    metricsets: ["query"]
+    period: 5m
+    hosts: ["postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${AIRFLOW_DB}?sslmode=disable"]
+    driver: postgres
+    raw_data.enabled: true  # (numbers are cast to float8: the driver returns NUMERIC as text)
+    sql_queries:
+      - query: >
+          SELECT 'task' AS kind, dag_id, task_id, state, try_number, duration AS duration_sec,
+                 EXTRACT(EPOCH FROM (start_date - queued_dttm))::float8 AS queue_delay_sec
+          FROM task_instance
+          WHERE end_date > now() - interval '5 minutes' AND end_date <= now()
+        response_format: table
+      - query: >
+          SELECT 'dag_run' AS kind, dag_id, run_type, state,
+                 EXTRACT(EPOCH FROM (end_date - start_date))::float8 AS duration_sec,
+                 EXTRACT(EPOCH FROM (start_date - run_after))::float8 AS start_delay_sec
+          FROM dag_run
+          WHERE end_date > now() - interval '5 minutes' AND end_date <= now()
+        response_format: table
+
+  # Serving DB, every 5 minutes: data quality issues that are not resolved (PIPE-10, written by the curation job)
+  - module: sql
+    metricsets: ["query"]
+    period: 5m
+    hosts: ["postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${SERVICE_DB}?sslmode=disable"]
+    driver: postgres
+    raw_data.enabled: true
+    sql_queries:
+      - query: >
+          SELECT 'quality' AS kind, rule, severity, status, count(*)::float8 AS issues
+          FROM quality_issue WHERE status <> 'RESOLVED' GROUP BY rule, severity, status
+        response_format: table
+      - query: >
+          SELECT 'quality_total' AS kind,
+                 count(*) FILTER (WHERE severity = 'ERROR' AND status = 'OPEN')::float8 AS open_errors,
+                 count(*) FILTER (WHERE severity = 'WARNING' AND status = 'OPEN')::float8 AS open_warnings,
+                 count(*) FILTER (WHERE status = 'ACKNOWLEDGED')::float8 AS acknowledged
+          FROM quality_issue
+        response_format: table
+
+output.elasticsearch:
+  hosts: ["${ELASTICSEARCH_URL:http://elasticsearch:9200}"]
+  index: "metrics-volley"
+setup.template.name: "metrics-volley"
+setup.template.pattern: "metrics-volley*"
+setup.template.overwrite: true
+setup.ilm.enabled: false
+logging.level: warning

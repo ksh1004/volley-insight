@@ -32,6 +32,9 @@ config.set("table.local-time-zone", "Asia/Seoul")
 # Files are finished and Kafka offsets committed only on checkpoints. Set it here, not only in the cluster
 # config: a job takes this setting from whoever submits it (e.g. the flink-job-keeper container).
 config.set("execution.checkpointing.interval", "30 s")
+# Own checkpoint folder, kept when the job stops: submit.sh restores from the newest one after a restart.
+config.set("state.checkpoints.dir", "hdfs://namenode:9000/flink/checkpoints/raw-archiver")
+config.set("execution.checkpointing.externalized-checkpoint-retention", "RETAIN_ON_CANCELLATION")
 
 t_env.execute_sql(f"""
     CREATE TABLE kafka_in (

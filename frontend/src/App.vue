@@ -1,10 +1,16 @@
 <script setup>
 import { RouterLink, RouterView } from 'vue-router'
+import SearchBox from '@/components/SearchBox.vue'
+import { useAuthStore } from '@/stores/auth'
+
+const auth = useAuthStore()
 
 const NAV = [
   { to: '/', label: '홈', exact: true },
   { to: '/schedule', label: '일정·결과' },
   { to: '/standings', label: '순위' },
+  { to: '/news', label: '기사' },
+  { to: '/predictions', label: '예측 검증' },
 ]
 </script>
 
@@ -23,6 +29,13 @@ const NAV = [
         <RouterLink v-for="n in NAV" :key="n.to" :to="n.to" class="nav-link"
                     :exact-active-class="n.exact ? 'is-active' : ''" :active-class="n.exact ? '' : 'is-active'">{{ n.label }}</RouterLink>
       </nav>
+      <SearchBox />
+      <RouterLink v-if="auth.isLoggedIn" to="/me" class="account" active-class="is-active"
+                  :aria-label="`내 정보: ${auth.user?.nickname || ''}`">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6" /></svg>
+        <span class="who">{{ auth.user?.nickname || '내 정보' }}</span>
+      </RouterLink>
+      <RouterLink v-else :to="{ path: '/login', query: { next: $route.fullPath } }" class="account">로그인</RouterLink>
     </div>
   </header>
   <main id="main" class="wrap app-main" tabindex="-1">
@@ -31,7 +44,7 @@ const NAV = [
   <footer class="app-footer">
     <div class="wrap">
       데이터 출처: <a href="https://www.kovo.co.kr" target="_blank" rel="noopener">KOVO 한국배구연맹</a>.
-      비상업 학습용 프로젝트이며, 경기 기록 사실 정보만 사용합니다.
+      비상업 학습용 프로젝트이며, 경기 기록 사실 정보만 사용합니다. 기사는 각 언론사의 제목·요약·링크만 보여줍니다.
     </div>
   </footer>
 </template>
@@ -57,6 +70,7 @@ const NAV = [
   --color-home: var(--color-primary);
   --color-away: var(--color-accent);
   --color-ring: #1e40af;
+  --color-highlight: #fef3c7; /* search match marks */
 
   --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
   --radius: 10px;
@@ -89,8 +103,21 @@ h2 { font-size: 1.05rem; margin: 0 0 var(--space-3); color: var(--color-heading)
             border-bottom: 2px solid transparent; transition: color .15s var(--ease), border-color .15s var(--ease); }
 .nav-link:hover { color: var(--color-foreground); text-decoration: none; }
 .nav-link.is-active { color: var(--color-primary); border-bottom-color: var(--color-primary); font-weight: 700; }
+.account { display: flex; align-items: center; gap: 6px; flex-shrink: 0; min-height: 36px; padding: 0 12px; border-radius: 999px;
+           border: 1px solid var(--color-border); color: var(--color-foreground); font-size: .88rem; font-weight: 600; white-space: nowrap; }
+.account:hover { border-color: var(--color-primary); color: var(--color-primary); text-decoration: none; }
+.account.is-active { border-color: var(--color-primary); color: var(--color-primary); background: var(--color-primary-soft); }
+.account svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.account .who { max-width: 8em; overflow: hidden; text-overflow: ellipsis; }
 .app-main { padding-top: var(--space-5); padding-bottom: 48px; min-height: calc(100vh - 140px); outline: none; }
 .app-footer { border-top: 1px solid var(--color-border); background: var(--color-card); color: var(--color-muted-foreground); font-size: .85rem; padding: var(--space-4) 0; }
+@media (max-width: 760px) {
+  /* search moves to its own row under the menu */
+  .header-row { flex-wrap: wrap; height: auto; row-gap: 0; padding-bottom: var(--space-2); }
+  .header-row > .brand, .header-row > .nav { height: 48px; }
+  .account { min-height: 40px; }
+  .account .who { max-width: 5em; }
+}
 @media (max-width: 560px) {
   .header-row { gap: var(--space-2); }
   .brand span { display: none; }
@@ -106,6 +133,7 @@ h2 { font-size: 1.05rem; margin: 0 0 var(--space-3); color: var(--color-heading)
 .small { font-size: .85rem; }
 .num { font-variant-numeric: tabular-nums; }
 .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
+.grid-2 > * { min-width: 0; } /* a wide table scrolls inside its card instead of widening the page */
 @media (max-width: 760px) { .grid-2 { grid-template-columns: 1fr; } }
 
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
@@ -140,6 +168,27 @@ select:hover { border-color: var(--color-primary); }
 .badge.l { background: var(--color-muted); color: var(--color-muted-foreground); }
 .badge.today { background: var(--color-accent-soft); color: var(--color-accent); }
 .empty { color: var(--color-muted-foreground); padding: var(--space-5) 0; text-align: center; }
+
+/* buttons and form fields (accounts) */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; padding: 0 16px;
+       border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-card); color: var(--color-foreground);
+       font: inherit; font-size: .92rem; font-weight: 600; cursor: pointer;
+       transition: background-color .15s var(--ease), color .15s var(--ease), border-color .15s var(--ease); }
+.btn:hover { border-color: var(--color-primary); color: var(--color-primary); text-decoration: none; }
+.btn.primary { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
+.btn.primary:hover { background: var(--color-heading); color: #fff; }
+.btn.danger { color: var(--color-bad); border-color: #fecaca; }
+.btn.danger:hover { background: #fef2f2; border-color: var(--color-bad); }
+.btn:disabled { opacity: .6; cursor: not-allowed; }
+.field { display: grid; gap: 6px; margin-bottom: var(--space-4); }
+.field > label { font-weight: 600; font-size: .9rem; }
+.field .hint { font-size: .8rem; color: var(--color-muted-foreground); margin: 0; }
+.field .err { font-size: .82rem; color: var(--color-bad); margin: 0; }
+.input { width: 100%; min-height: 44px; padding: 8px 12px; font: inherit; color: var(--color-foreground); background: var(--color-card);
+         border: 1px solid var(--color-border); border-radius: 8px; transition: border-color .15s var(--ease); }
+.input:hover { border-color: var(--color-primary); }
+.input[aria-invalid='true'] { border-color: var(--color-bad); }
+@media (pointer: coarse) { .btn { min-height: 44px; } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0ms !important; animation-duration: 0ms !important; animation-iteration-count: 1 !important; }

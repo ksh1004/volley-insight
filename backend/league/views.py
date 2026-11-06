@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from analytics import queries as aq
+from analytics.form import player_form
 from matches.models import Match, PlayerMatchStat
 from matches.serializers import MatchListSerializer, match_key
 from matches.views import SOURCE, base_matches
@@ -77,6 +78,27 @@ class PlayerRankingView(APIView):
                          "source": SOURCE})
 
 
+def team_form(team, season):
+    """Players of the team whose last five games rose or fell clearly (ANL-08), strongest change first."""
+    games = {}
+    rows = (PlayerMatchStat.objects.filter(team=team, match__competition__season=season, match__status__in=q.FINISHED)
+            .exclude(played_sets="00000").select_related("player", "match").order_by("match__scheduled_at"))
+    for s in rows:
+        games.setdefault(s.player, []).append({"match": match_key(s.match), "date": s.match.scheduled_at,
+                                                "sets": s.played_sets.count("1"), "points": s.points,
+                                                **{f: getattr(s, f) for f in q.BOX_FIELDS}})
+    out = []
+    for player, log in games.items():
+        f = player_form(log)
+        if not f:
+            continue
+        moved = [m for m in f["metrics"] if m["trend"] in ("up", "down")]
+        if moved:
+            out.append({"player": {"code": player.code, "name": player.name}, "overall": f["overall"],
+                        "metrics": moved, "strength": max(abs(m["z"]) for m in moved)})
+    return sorted(out, key=lambda r: -r["strength"])
+
+
 class TeamDetailView(APIView):
     """GET /api/teams/{code}?season=: record, indicators vs league average, roster, recent and next matches (WEB-06)."""
 
@@ -112,6 +134,8 @@ class TeamDetailView(APIView):
                      "home_arena": team.home_arena, "home_city": team.home_city, "is_active": team.is_active},
             "season": season_ref(season), "seasons": [season_ref(s) for s in seasons],
             "record": record, "stats": stats,
+            "profile": aq.team_profile(team, season, totals),
+            "form": team_form(team, season),
             "rating": {"history": aq.rating_history(team, season),
                        "league": aq.current_ratings(team.gender, season)},
             "roster": [{"player": {"code": r["code"], "name": r["name"]}, "position": positions.get(r["code"], ""),
@@ -165,5 +189,9 @@ class PlayerDetailView(APIView):
             "team": {"code": latest.team.code, "name": latest.team.name} if latest else None,
             "back_number": latest.back_number if latest else None,
             "season": season_ref(season), "seasons": season_codes,
-            "career": career, "matches": log, "profile": aq.player_percentiles(player, season), "source": SOURCE,
+            "career": career, "matches": log, "profile": aq.player_percentiles(player, season),
+            "style": aq.player_style(player, season),
+            "form": player_form([{"match": r["match"], "date": r["date"], "sets": r["sets_played"], "points": r["points"],
+                                  **{f: r[f] for f in q.BOX_FIELDS}} for r in log if r["result"]]),
+            "source": SOURCE,
         })

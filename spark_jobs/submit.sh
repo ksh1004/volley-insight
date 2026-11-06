@@ -9,7 +9,7 @@ job="$1"; shift
 exec spark-submit \
   --master yarn --deploy-mode client \
   --name "$(basename "$job" .py)" \
-  --jars /opt/spark-jars/postgresql.jar \
+  --jars /opt/spark-jars/postgresql.jar,/opt/spark-jars/elasticsearch-spark.jar \
   --conf spark.driver.host=airflow \
   --conf spark.driver.bindAddress=0.0.0.0 \
   --conf spark.driver.memory=1g \

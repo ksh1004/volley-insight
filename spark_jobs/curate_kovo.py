@@ -2,7 +2,9 @@
 
   HDFS /raw/topic=kovo.{schedule,match,rally}/   (collector envelopes, one JSON per line)
     -> parse + keep the latest copy of each item (re-collection makes duplicates)
-    -> quality checks (set counts, play-by-play score vs official score, box score totals)
+    -> admin corrections (ADM-03, table data_correction)
+    -> quality checks (PIPE-10: set counts and set-score rules, play-by-play vs official score, box score totals,
+       stat ranges, required values) -> staging.quality_issue -> quality_issue
     -> HDFS /curated/kovo/{table}/season_code=XXX/   (Parquet)
     -> PostgreSQL `staging` schema (JDBC) -> sql/merge_kovo.sql upserts into the serving tables
 
@@ -29,7 +31,7 @@ RAW = os.environ.get("RAW_PATH", "hdfs://namenode:9000/raw")
 CURATED = os.environ.get("CURATED_PATH", "hdfs://namenode:9000/curated/kovo")
 MERGE_SQL = Path(__file__).resolve().parent / "sql" / "merge_kovo.sql"
 
-SKIP_LEAGUES = ["200", "801", "901"]  # season totals, all-star game, exhibition
+SKIP_LEAGUES = ["200", "801", "901", "903"]  # season totals, all-star game, exhibition, practice
 POST_LEAGUES = ["202", "203", "204"]
 # KOVO prefix -> attack type (verified: the six attempts add up to `att` for every player)
 ATTACK_TYPES = [("oa", "OPEN"), ("ta", "TIME_DIFF"), ("ma", "MOVING"), ("ba", "BACK"),
@@ -45,8 +47,6 @@ BOX = [("att", "attack_attempts"), ("ats", "attack_success"), ("atf", "attack_bl
 # Missing play-by-play is only an issue from that season on. A fixed value, not "this season has none",
 # so a new season whose play-by-play KOVO publishes late is still flagged and collected again.
 PLAY_BY_PLAY_FROM = "020"
-# Issues that keep a finished match from becoming CONFIRMED
-BLOCKING = ["SET_COUNT_MISMATCH", "MISSING_BOX_SCORE", "MISSING_RALLY", "RALLY_SCORE_MISMATCH"]
 
 ENVELOPE = "endpoint: STRING, params: MAP<STRING, STRING>, run_id: STRING, fetched_at: STRING"
 GAME = ("seasonCode: STRING, leagueCode: STRING, leagueName: STRING, round: INT, gender: STRING, gnum: INT, "
@@ -91,6 +91,20 @@ def in_seasons(col, seasons):
 
 def blank_to_null(col):
     return F.when(F.trim(col) == "", None).otherwise(F.trim(col))
+
+
+# Up to season 018 KOVO used L (left = outside hitter), C (centre), R (right = opposite), Li (libero); from 019 on
+# OH, MB, OP, L (libero), S. Mapped to the current codes so "L" always means libero.
+OLD_POSITIONS = {"L": "OH", "C": "MB", "R": "OP", "Li": "L"}
+CURRENT_CODES_FROM = "019"
+
+
+def position_code():
+    """Player position in the current code set ('' when unknown). Needs a season_code column."""
+    pos = F.coalesce(blank_to_null("position"), F.lit(""))
+    old = F.col("season_code") < F.lit(CURRENT_CODES_FROM)
+    mapped = F.create_map(*[F.lit(x) for kv in OLD_POSITIONS.items() for x in kv])[pos]
+    return F.when(old & mapped.isNotNull(), mapped).otherwise(pos)
 
 
 # ---------------------------------------------------------------- building
@@ -178,7 +192,7 @@ def build_box_scores(details, games):
     player_stats = players.select(
         "season_code", "game_no", F.col("pcode").alias("player_code"), F.col("tcode").alias("team_code"),
         F.when(F.col("bnum") > 0, F.col("bnum")).alias("back_number"),
-        F.coalesce(blank_to_null("position"), F.lit("")).alias("position"),
+        position_code().alias("position"),
         F.coalesce(F.col("ynCaptain") == "1", F.lit(False)).alias("is_captain"), played.alias("played_sets"),
         F.coalesce("point", F.lit(0)).alias("points"), *box)
 
@@ -199,7 +213,7 @@ def build_box_scores(details, games):
     player_rows = players.select(
         "season_code", F.col("pcode").alias("code"), F.col("pname").alias("name"),
         F.when(F.col("gender") == "1", "M").otherwise("F").alias("gender"),
-        F.coalesce(blank_to_null("position"), F.lit("")).alias("position"),
+        position_code().alias("position"),
         F.when(F.col("height") > 0, F.col("height")).alias("height_cm"),
         F.col("game_date").alias("last_seen_on"))
     return player_stats, team_stats, attacks, latest(player_rows, ["season_code", "code"], order="last_seen_on")
@@ -238,49 +252,214 @@ def build_rally(spark, seasons, games):
     return events
 
 
-# ---------------------------------------------------------------- quality
-def quality_issues(matches, set_scores, team_stats, player_stats, rally):
-    finished = matches.where("finished").select("season_code", "game_no", "home_sets", "away_sets")
+# ---------------------------------------------------------------- corrections (ADM-03)
+# Admins correct single fields in Django admin (backend/ops, table data_correction). Every run applies the active
+# corrections before the quality checks, so re-collection never undoes them and the marts read corrected data.
+CORRECTABLE = {  # Correction.target -> (curated table, key columns)
+    "player": ("player", ["code"]),
+    "team": ("team", ["code"]),
+    "match": ("match", ["season_code", "game_no"]),
+    "set_score": ("set_score", ["season_code", "game_no", "set_no"]),
+    "player_match_stat": ("player_match_stat", ["season_code", "game_no", "player_code"]),
+    "team_match_stat": ("team_match_stat", ["season_code", "game_no", "team_code"]),
+}
 
-    won = set_scores.groupBy("season_code", "game_no").agg(
+
+def correction_key(target, key):
+    """Key columns of a correction: ("set_score", "023-5/3") -> {"season_code": "023", "game_no": 5, "set_no": 3}.
+    None when the key does not fit the target (the admin form validates keys; this is only a safety net)."""
+    cols = CORRECTABLE[target][1]
+    if cols == ["code"]:
+        return {"code": key.strip()}
+    game, _, sub = key.strip().partition("/")
+    season, _, game_no = game.partition("-")
+    if not (len(season) == 3 and season.isdigit() and game_no.isdigit()) or bool(sub) != (len(cols) == 3):
+        return None
+    out = {"season_code": season, "game_no": int(game_no)}
+    if sub:
+        if cols[2] == "set_no" and not sub.isdigit():
+            return None
+        out[cols[2]] = int(sub) if cols[2] == "set_no" else sub
+    return out
+
+
+def correction_plan(rows):
+    """{curated table: [(key columns, field, value text)]} from (target, key, field, value) of active corrections."""
+    plan = {}
+    for target, key, field, value in rows:
+        if target not in CORRECTABLE:
+            continue
+        keys = correction_key(target, key)
+        if keys is not None:
+            plan.setdefault(CORRECTABLE[target][0], []).append((keys, field, value or ""))
+    return plan
+
+
+def load_corrections():
+    """Active corrections from PostgreSQL ([] when the table or the database is not there)."""
+    import psycopg2
+
+    try:
+        conn = psycopg2.connect(host=os.environ.get("POSTGRES_HOST", "postgres"),
+                                port=os.environ.get("POSTGRES_PORT", "5432"),
+                                dbname=os.environ.get("SERVICE_DB", "service"),
+                                user=os.environ["POSTGRES_USER"], password=os.environ["POSTGRES_PASSWORD"])
+    except Exception as exc:  # noqa: BLE001 - a run without corrections is still a valid run
+        print(f"corrections: not loaded ({exc.__class__.__name__})")
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.data_correction')")
+            if cur.fetchone()[0] is None:
+                return []
+            cur.execute("SELECT target, key, field, value FROM data_correction WHERE is_active ORDER BY id")
+            return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def apply_corrections(df, items):
+    """Overwrite the corrected fields; a blank value is NULL for non-text columns."""
+    from pyspark.sql.types import StringType
+
+    for keys, field, text in items or []:
+        if field not in df.columns:
+            continue  # e.g. birth_date: not in the curated data, only in the serving row
+        dtype = df.schema[field].dataType
+        text = text.strip()
+        value = text if (text or isinstance(dtype, StringType)) else None
+        cond = None
+        for col, v in keys.items():
+            c = F.col(col) == F.lit(v)
+            cond = c if cond is None else cond & c
+        df = df.withColumn(field, F.when(cond, F.lit(value).cast(dtype)).otherwise(F.col(field)))
+    return df
+
+
+# ---------------------------------------------------------------- quality (PIPE-10)
+ISSUE_KEYS = ["season_code", "game_no", "set_no", "rule", "subject"]
+# ERROR issues keep a finished match from becoming CONFIRMED; WARNING issues are only reported
+BLOCKING = ["SET_COUNT_MISMATCH", "MISSING_BOX_SCORE", "MISSING_RALLY", "RALLY_SCORE_MISMATCH",
+            "INVALID_SET_SCORE", "STAT_RANGE", "MISSING_VALUE"]
+# KOVO's player `point` in 2004-05 ~ 2007-08 (seasons 001-004) differs from attack + block + ace in about a third
+# of the rows (a different definition then), so that check starts with season 005.
+PLAYER_POINTS_FROM = "005"
+# success (+ errors) can never exceed the attempts
+RANGES = [("attack", "attack_success + attack_blocked + attack_errors > attack_attempts"),
+          ("serve", "serve_aces + serve_errors > serve_attempts"),
+          ("block", "block_success > block_attempts"),
+          ("receive", "receive_excellent + receive_errors > receive_attempts"),
+          ("dig", "dig_success > dig_attempts"),
+          ("set", "set_success > set_attempts")]
+
+
+def issue(df, rule, detail, set_no=None, subject=None):
+    subject_col = F.lit(subject[1:]) if subject and subject.startswith("=") else (F.col(subject) if subject else F.lit(""))
+    return df.select("season_code", "game_no",
+                     (F.col(set_no) if set_no else F.lit(0)).cast("int").alias("set_no"), F.lit(rule).alias("rule"),
+                     subject_col.cast("string").alias("subject"), detail.alias("detail"))
+
+
+def range_issues(stats, subject):
+    bad = F.concat_ws(", ", *[F.when(F.expr(expr), F.lit(name)) for name, expr in RANGES])
+    return issue(stats.withColumn("bad", bad).where(F.col("bad") != ""), "STAT_RANGE",
+                 F.concat(F.lit("more success/errors than attempts: "), F.col("bad")), subject=subject)
+
+
+def quality_issues(matches, set_scores, team_stats, player_stats, rally):
+    """One row per (season, game, set, rule, subject). set_no 0 = the whole match; subject = team/player code."""
+    keys = ["season_code", "game_no"]
+    finished = matches.where("finished").select(*keys, "home_code", "home_sets", "away_sets")
+
+    missing = F.concat_ws(", ", *[F.when(F.col(c).isNull(), F.lit(c)) for c in ("home_code", "away_code", "game_date")])
+    missing_match = issue(matches.withColumn("missing", missing).where(F.col("missing") != ""), "MISSING_VALUE",
+                          F.concat(F.lit("schedule row without "), F.col("missing")))
+    no_code = player_stats.where(F.col("player_code").isNull() | F.col("team_code").isNull()).groupBy(*keys).count()
+    missing_code = issue(no_code, "MISSING_VALUE",
+                         F.format_string("%d box-score row(s) without a player or team code", "count"), subject="=box")
+
+    won = set_scores.groupBy(*keys).agg(
         F.sum(F.when(F.col("home_points") > F.col("away_points"), 1).otherwise(0)).alias("h"),
         F.sum(F.when(F.col("away_points") > F.col("home_points"), 1).otherwise(0)).alias("a"))
-    set_count = (finished.join(won, ["season_code", "game_no"], "left")
-                 .where((F.coalesce("h", F.lit(-1)) != F.col("home_sets")) | (F.coalesce("a", F.lit(-1)) != F.col("away_sets")))
-                 .select("season_code", "game_no", F.lit(None).cast("int").alias("set_no"),
-                         F.lit("SET_COUNT_MISMATCH").alias("check"),
-                         F.format_string("sets %d:%d, set scores won %s:%s", "home_sets", "away_sets", "h", "a").alias("detail")))
+    set_count = issue(finished.join(won, keys, "left")
+                      .where((F.coalesce("h", F.lit(-1)) != F.col("home_sets")) | (F.coalesce("a", F.lit(-1)) != F.col("away_sets"))),
+                      "SET_COUNT_MISMATCH",
+                      F.format_string("sets %d:%d, set scores won %s:%s", "home_sets", "away_sets", "h", "a"))
 
-    missing_box = (finished.join(team_stats.select("season_code", "game_no").distinct(), ["season_code", "game_no"], "left_anti")
-                   .select("season_code", "game_no", F.lit(None).cast("int").alias("set_no"),
-                           F.lit("MISSING_BOX_SCORE").alias("check"), F.lit("no match detail collected").alias("detail")))
+    sets_of_finished = set_scores.join(finished.select(*keys), keys)
+    target = F.when(F.col("set_no") == 5, 15).otherwise(25)
+    hi, lo = F.greatest("home_points", "away_points"), F.least("home_points", "away_points")
+    valid = ((hi == target) & (hi - lo >= 2)) | ((hi > target) & (hi - lo == 2))
+    invalid_set = issue(sets_of_finished.where(~F.coalesce(valid, F.lit(False))), "INVALID_SET_SCORE",
+                        F.format_string("set score %s:%s", "home_points", "away_points"), set_no="set_no")
 
-    final = rally.groupBy("season_code", "game_no", "set_no").agg(
+    missing_box = issue(finished.join(team_stats.select(*keys).distinct(), keys, "left_anti"),
+                        "MISSING_BOX_SCORE", F.lit("no match detail collected"))
+
+    final = rally.groupBy(*keys, "set_no").agg(
         F.max("home_score").alias("rh"), F.max("away_score").alias("ra"), F.count("*").alias("events"))
-    sets_of_finished = set_scores.join(finished.select("season_code", "game_no"), ["season_code", "game_no"])         .where(F.col("season_code") >= PLAY_BY_PLAY_FROM)
-    checked = sets_of_finished.join(final, ["season_code", "game_no", "set_no"], "left")
-    missing_rally = checked.where(F.col("events").isNull()).select(
-        "season_code", "game_no", "set_no", F.lit("MISSING_RALLY").alias("check"),
-        F.lit("no play-by-play for this set").alias("detail"))
-    mismatch = checked.where(F.col("events").isNotNull() & ((F.col("rh") != F.col("home_points")) | (F.col("ra") != F.col("away_points")))) \
-        .select("season_code", "game_no", "set_no", F.lit("RALLY_SCORE_MISMATCH").alias("check"),
-                F.format_string("play-by-play %d:%d, official %d:%d", "rh", "ra", "home_points", "away_points").alias("detail"))
+    checked = sets_of_finished.where(F.col("season_code") >= PLAY_BY_PLAY_FROM).join(final, [*keys, "set_no"], "left")
+    missing_rally = issue(checked.where(F.col("events").isNull()), "MISSING_RALLY",
+                          F.lit("no play-by-play for this set"), set_no="set_no")
+    rally_mismatch = issue(checked.where(F.col("events").isNotNull()
+                                         & ((F.col("rh") != F.col("home_points")) | (F.col("ra") != F.col("away_points")))),
+                           "RALLY_SCORE_MISMATCH",
+                           F.format_string("play-by-play %d:%d, official %d:%d", "rh", "ra", "home_points", "away_points"),
+                           set_no="set_no")
 
-    sums = player_stats.groupBy("season_code", "game_no", "team_code").agg(
-        *[F.sum(c).alias(c) for c in ("attack_success", "block_success", "serve_aces", "dig_success")])
-    box = team_stats.alias("t").join(sums.alias("s"), ["season_code", "game_no", "team_code"])
-    box_mismatch = box.where(" OR ".join(f"t.{c} != s.{c}" for c in ("attack_success", "block_success", "serve_aces", "dig_success"))) \
-        .select("season_code", "game_no", F.lit(None).cast("int").alias("set_no"), F.lit("BOX_SCORE_MISMATCH").alias("check"),
-                F.concat(F.lit("team "), F.col("team_code"), F.lit(" totals differ from the sum of its players")).alias("detail"))
+    summed = ("attack_success", "block_success", "serve_aces", "dig_success")
+    sums = player_stats.groupBy(*keys, "team_code").agg(*[F.sum(c).alias(c) for c in summed])
+    box = team_stats.alias("t").join(sums.alias("s"), [*keys, "team_code"])
+    box_mismatch = issue(box.where(" OR ".join(f"t.{c} != s.{c}" for c in summed)), "BOX_SCORE_MISMATCH",
+                         F.lit("team totals differ from the sum of its players"), subject="team_code")
 
-    return set_count.unionByName(missing_box).unionByName(missing_rally).unionByName(mismatch).unionByName(box_mismatch)
+    side = set_scores.groupBy(*keys).agg(F.sum("home_points").alias("hp"), F.sum("away_points").alias("ap"))
+    team_points = (team_stats.join(finished.select(*keys, "home_code"), keys).join(side, keys)
+                   .withColumn("set_total", F.when(F.col("team_code") == F.col("home_code"), F.col("hp")).otherwise(F.col("ap"))))
+    points_mismatch = issue(team_points.where(F.col("points") != F.col("set_total")), "POINTS_MISMATCH",
+                            F.format_string("box score %d, set scores %d", "points", "set_total"), subject="team_code")
+
+    player_points = issue(player_stats.where((F.col("season_code") >= PLAYER_POINTS_FROM)
+                                             & (F.col("points") != F.col("attack_success") + F.col("block_success") + F.col("serve_aces"))),
+                          "PLAYER_POINTS_MISMATCH",
+                          F.format_string("points %d, attack %d + block %d + ace %d", "points", "attack_success",
+                                          "block_success", "serve_aces"), subject="player_code")
+
+    parts = [missing_match, missing_code, set_count, invalid_set, missing_box, missing_rally, rally_mismatch,
+             range_issues(player_stats, "player_code"), range_issues(team_stats, "team_code"),
+             box_mismatch, points_mismatch, player_points]
+    out = parts[0]
+    for df in parts[1:]:
+        out = out.unionByName(df)
+    return finish_issues(out)
+
+
+def name_issues(players, rally):
+    """Players known only from play-by-play have no name until an admin fills it in (a player correction)."""
+    first = rally.where(F.col("player_code").isNotNull()) \
+        .groupBy("season_code", F.col("player_code").alias("code")).agg(F.min("game_no").alias("game_no"))
+    nameless = players.where(F.coalesce(F.trim("name"), F.lit("")) == "").join(first, ["season_code", "code"])
+    return finish_issues(issue(nameless, "PLAYER_NAME_MISSING", F.lit("only in play-by-play, no name"), subject="code"))
+
+
+def finish_issues(df):
+    """Severity, and one row per key (several findings of one rule on the same row are joined)."""
+    return (df.groupBy(*ISSUE_KEYS).agg(F.concat_ws("; ", F.sort_array(F.collect_list("detail"))).alias("detail"))
+            .withColumn("severity", F.when(F.col("rule").isin(BLOCKING), "ERROR").otherwise("WARNING")))
+
+
+# A game still without a result this many days after its date was not played (e.g. the 4th and 5th finals games
+# when a series ends 3:0). KOVO moves postponed games to a new date, so those stay SCHEDULED.
+UNPLAYED_AFTER_DAYS = 2
 
 
 def with_status(matches, issues):
-    blocked = issues.where(F.col("check").isin(BLOCKING)).select("season_code", "game_no").distinct() \
+    blocked = issues.where(F.col("severity") == "ERROR").select("season_code", "game_no").distinct() \
         .withColumn("blocked", F.lit(True))
+    past = F.to_date("game_date") < F.date_sub(F.current_date(), UNPLAYED_AFTER_DAYS)
     return (matches.join(blocked, ["season_code", "game_no"], "left")
-            .withColumn("status", F.when(~F.col("finished"), "SCHEDULED")
+            .withColumn("status", F.when(~F.col("finished") & past, "CANCELLED")
+                        .when(~F.col("finished"), "SCHEDULED")
                         .when(F.col("blocked").isNull(), "CONFIRMED").otherwise("FINISHED"))
             .drop("blocked", "finished"))
 
@@ -381,6 +560,16 @@ def main():
     details = build_details(spark, seasons)
     player_stats, team_stats, attacks, players = build_box_scores(details, games)
     rally = build_rally(spark, seasons, games).cache()
+
+    plan = correction_plan(load_corrections())
+    print("corrections:", {name: len(items) for name, items in plan.items()} or "none")
+    matches = apply_corrections(matches, plan.get("match"))
+    set_scores = apply_corrections(set_scores, plan.get("set_score"))
+    teams = apply_corrections(teams, plan.get("team"))
+    player_stats = apply_corrections(player_stats, plan.get("player_match_stat"))
+    team_stats = apply_corrections(team_stats, plan.get("team_match_stat")).withColumn("opponent_errors", F.greatest(
+        F.lit(0), F.col("points") - F.col("attack_success") - F.col("block_success") - F.col("serve_aces")))
+
     issues = quality_issues(matches, set_scores, team_stats, player_stats, rally).cache()
     matches = with_status(matches, issues)
 
@@ -397,6 +586,8 @@ def main():
         "season_code", "code", F.lit("").alias("name"),
         F.when(F.col("gender") == "1", "M").otherwise("F").alias("gender"),
         F.lit("").alias("position"), F.lit(None).cast("int").alias("height_cm"), "last_seen_on"))
+    players = apply_corrections(players, plan.get("player"))
+    issues = issues.unionByName(name_issues(players, rally)).cache()
 
     tables = {"season": season_rows, "competition": competitions, "team": teams, "player": players,
               "match": matches, "set_score": set_scores, "team_match_stat": team_stats,
@@ -407,10 +598,10 @@ def main():
     print("curated rows:", {name: df.count() for name, df in tables.items()})
     write_curated(tables)
     print("quality issues:")
-    for r in issues.groupBy("check").count().collect():
-        print(f"  {r['check']}: {r['count']}")
-    for r in issues.orderBy("season_code", "game_no", "set_no").limit(20).collect():
-        print(f"  {r.season_code}-{r.game_no} set {r.set_no}: {r.check} {r.detail}")
+    for r in issues.groupBy("severity", "rule").count().orderBy("severity", "rule").collect():
+        print(f"  {r.severity} {r.rule}: {r['count']}")
+    for r in issues.where("severity = 'ERROR'").orderBy("season_code", "game_no", "set_no").limit(20).collect():
+        print(f"  {r.season_code}-{r.game_no} set {r.set_no}: {r.rule} {r.subject} {r.detail}")
 
     if not args.no_load:
         load_postgres(spark, tables, wanted)

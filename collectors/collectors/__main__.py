@@ -5,6 +5,10 @@
   python -m collectors schedule --season 023 [--league 201] [--gender 1] [--dry-run]
   python -m collectors games --season 022 [--league 203] [--gnum 3] [--limit 5] [--only match|rally]
   python -m collectors probe --path /stat/real-time -p season=022 -p gnum=3 ...   # one request -> samples/
+  python -m collectors news [--dry-run]              # volleyball articles from RSS (+ Naver API if a key is set)
+  python -m collectors kafka-lag [--every 30] [--once]   # consumer lag of every group -> Elasticsearch
+  python -m collectors live [--every 15]             # today's games, new play-by-play events -> kovo.live
+  python -m collectors replay 023-5 [--speed 10] [--from-set 1]   # a finished game -> kovo.live (PIPE-11)
 
 Under Git Bash, set MSYS_NO_PATHCONV=1 so `--path /stat/...` is not rewritten into a Windows path.
 """
@@ -17,6 +21,7 @@ from pathlib import Path
 from .kovo_client import KovoClient
 from .kovo_collectors import (MatchCollector, RallyCollector, ScheduleCollector, SeasonCollector,
                               finished_games)
+from .news import NewsCollector, NewsHttp
 from .publisher import DryRunPublisher, KafkaPublisher
 
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
@@ -98,6 +103,37 @@ def cmd_games(args):
         print(f"kovo.rally: published {RallyCollector(client, publisher).run(games=games, gcode=args.gcode)} message(s)")
 
 
+def cmd_news(args):
+    publisher = make_publisher(args)
+    collector = NewsCollector(NewsHttp(), publisher)
+    n = collector.run()
+    print(f"news.article: published {n} message(s)" + (f", failed feeds: {collector.failures}" if collector.failures else ""))
+    if args.dry_run:
+        for _, _, a in publisher.messages:
+            if a.get("payload"):
+                p = a["payload"]
+                print(f"  {p['published_at']} {p['publisher']:<6} {p['title'][:60]}")
+
+
+def cmd_kafka_lag(args):
+    from .kafka_lag import run
+
+    run(every=args.every, once=args.once)
+
+
+def cmd_live(args):
+    from .live import LiveCollector
+
+    LiveCollector(KovoClient(), KafkaPublisher()).run(every=args.every)
+
+
+def cmd_replay(args):
+    from .replay import MatchReplayer
+
+    n = MatchReplayer(KafkaPublisher()).replay(args.match, speed=args.speed, from_set=args.from_set)
+    print(f"kovo.live: replayed {n} rallies of {args.match}")
+
+
 def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     p = argparse.ArgumentParser(prog="collectors")
@@ -134,6 +170,25 @@ def main(argv=None):
     sp.add_argument("--only", choices=["match", "rally"], help="collect only box scores or only play-by-play")
     sp.add_argument("--dry-run", action="store_true")
     sp.set_defaults(func=cmd_games)
+
+    sp = sub.add_parser("news", help="publish volleyball article metadata (RSS, Naver API)")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(func=cmd_news)
+
+    sp = sub.add_parser("kafka-lag", help="write every consumer group's lag to Elasticsearch (Kibana)")
+    sp.add_argument("--every", type=float, default=30.0, help="seconds between checks")
+    sp.add_argument("--once", action="store_true")
+    sp.set_defaults(func=cmd_kafka_lag)
+
+    sp = sub.add_parser("live", help="follow today's games and publish new play-by-play events (runs forever)")
+    sp.add_argument("--every", type=float, default=15.0, help="seconds between polls of each game (COL-06: 15-30)")
+    sp.set_defaults(func=cmd_live)
+
+    sp = sub.add_parser("replay", help="re-publish a finished game's play-by-play as if it were live")
+    sp.add_argument("match", help="season-game number, e.g. 023-5")
+    sp.add_argument("--speed", type=float, default=10.0, help="1 = real pace, 10 = ten times faster")
+    sp.add_argument("--from-set", type=int, default=1)
+    sp.set_defaults(func=cmd_replay)
 
     args = p.parse_args(argv)
     args.func(args)
