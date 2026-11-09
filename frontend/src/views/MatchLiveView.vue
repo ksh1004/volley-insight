@@ -3,13 +3,18 @@
 // Data: SSE snapshot + updates from the gateway (useLiveStream). Layout follows design-system MASTER.md:
 // dense cards, home = primary / away = accent, every colour paired with text, one atomic status line for
 // screen readers (ui-ux-pro-max "Contextual Live Badge Updates": announce the score in context, not bare numbers).
-import { computed, onBeforeUnmount, ref } from 'vue'
+// Motion (in-house toolkit, src/motion): score digits roll, the side that scored glows once with a "+1", the serve
+// ball pops over to the serving side, the win probability slides and shows how much it moved, new feed lines slide
+// in. Only changes that come from a new point move; the first snapshot just appears. "Reduce motion" turns it off.
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import AsyncState from '@/components/AsyncState.vue'
 import CompareBars from '@/components/CompareBars.vue'
 import ScoreFlow from '@/components/ScoreFlow.vue'
 import WinProbBar from '@/components/WinProbBar.vue'
 import { useLiveStream } from '@/composables/useLiveStream'
 import { ACTIONS, GENDERS, LIVE_MODES, POINT_KINDS, RESULTS } from '@/constants/volley'
+import { useFlash } from '@/motion/core'
+import RollingNumber from '@/motion/RollingNumber.vue'
 import { fmtFullDate, fmtTime, pct } from '@/utils/format'
 
 const props = defineProps({ matchKey: { type: String, required: true } })
@@ -85,6 +90,29 @@ const metricRows = computed(() => {
   ]
 })
 
+// ---- motion feedback for a new point (not for the first snapshot, which may hold a whole set at once)
+const { flash: scored, pulse: pulseScore } = useFlash(1100)
+let seenPoints = null
+watch(() => points.value.length, (len) => {
+  if (seenPoints != null && len > seenPoints && len - seenPoints <= 3) {
+    const last = points.value[len - 1]
+    if (last?.winner) pulseScore(sideOf(last.winner))
+  }
+  seenPoints = len
+})
+// how much the live win probability moved with the last point, shown for a few seconds
+const probMove = ref(null)
+let probTimer = 0
+watch(() => s.value?.home_win_prob, (now, before) => {
+  if (now == null || before == null) return
+  const d = Math.round((now - before) * 100)
+  if (!d) return
+  clearTimeout(probTimer)
+  probMove.value = { d, key: Date.now() }
+  probTimer = setTimeout(() => { probMove.value = null }, 4000)
+})
+onBeforeUnmount(() => clearTimeout(probTimer))
+
 // ---- recent points, newest first
 const recent = computed(() => points.value.slice(-12).reverse())
 function describe(p) {
@@ -122,6 +150,7 @@ function describe(p) {
         <template v-if="s">
           <div class="board">
             <RouterLink :to="`/teams/${match.home.code}`" class="team home">
+              <span v-if="scored?.value === 'home'" :key="scored.n" class="glow" aria-hidden="true" />
               <span class="side small">홈</span>
               <span class="tname">{{ match.home.name }}</span>
               <span class="serve small" :class="{ on: s.serving === s.home }">
@@ -131,14 +160,19 @@ function describe(p) {
             </RouterLink>
             <div class="center">
               <div class="sets" :aria-label="`세트 스코어 ${s.home_sets} 대 ${s.away_sets}`">
-                <b class="h">{{ s.home_sets }}</b><span>:</span><b class="a">{{ s.away_sets }}</b>
+                <b class="h"><RollingNumber :value="s.home_sets" /></b><span>:</span><b class="a"><RollingNumber :value="s.away_sets" /></b>
               </div>
               <div class="set-label small">{{ setLabel }}</div>
               <div v-if="!finished" class="points" :aria-label="`현재 세트 점수 ${s.home_points} 대 ${s.away_points}`">
-                <b class="h">{{ s.home_points }}</b><span>:</span><b class="a">{{ s.away_points }}</b>
+                <b class="h"><RollingNumber :value="s.home_points" />
+                  <i v-if="scored?.value === 'home'" :key="scored.n" class="plus" aria-hidden="true">+1</i></b>
+                <span>:</span>
+                <b class="a"><RollingNumber :value="s.away_points" />
+                  <i v-if="scored?.value === 'away'" :key="scored.n" class="plus" aria-hidden="true">+1</i></b>
               </div>
             </div>
             <RouterLink :to="`/teams/${match.away.code}`" class="team away">
+              <span v-if="scored?.value === 'away'" :key="scored.n" class="glow" aria-hidden="true" />
               <span class="side small">원정</span>
               <span class="tname">{{ match.away.name }}</span>
               <span class="serve small" :class="{ on: s.serving === s.away }">
@@ -149,18 +183,20 @@ function describe(p) {
           </div>
 
           <div class="under">
-            <span v-if="run" class="run small">{{ run }}</span>
-            <ol v-if="s.set_scores.length" class="set-scores small" aria-label="끝난 세트 점수">
+            <Transition name="swap"><span v-if="run" :key="run" class="run small">{{ run }}</span></Transition>
+            <TransitionGroup v-if="s.set_scores.length" tag="ol" name="item" class="set-scores small" aria-label="끝난 세트 점수">
               <li v-for="([h, a], i) in s.set_scores" :key="i">
                 <span class="muted">{{ i + 1 }}세트</span>
                 <b :class="{ w: h > a }">{{ h }}</b>-<b :class="{ w: a > h }">{{ a }}</b>
               </li>
-            </ol>
+            </TransitionGroup>
           </div>
 
           <div v-if="s.home_win_prob != null" class="prob">
             <WinProbBar :home="match.home.name" :away="match.away.name" :prob="s.home_win_prob" label="실시간 승리 확률" />
             <p class="muted small">
+              <Transition name="swap"><span v-if="probMove" :key="probMove.key" class="move" :class="probMove.d > 0 ? 'home' : 'away'">
+                {{ probMove.d > 0 ? match.home.name : match.away.name }} {{ Math.abs(probMove.d) }}%p ↑</span></Transition>
               실시간 승리 확률<template v-if="s.home_set_win_prob != null"> · 이번 세트 {{ match.home.name }}
                 {{ Math.round(s.home_set_win_prob * 100) }}%</template>.
               현재 점수·서브권과 두 팀의 이번 시즌 사이드아웃·브레이크 비율로 계산합니다.
@@ -186,19 +222,22 @@ function describe(p) {
           <section class="card">
             <div class="card-head">
               <h2>점수 흐름</h2>
-              <div class="tabs" role="group" aria-label="세트 선택">
+              <div v-glider class="tabs" role="group" aria-label="세트 선택">
                 <button v-for="n in setNumbers" :key="n" type="button" class="tab" :aria-pressed="shownSet === n"
                         @click="picked = n === s.current_set ? null : n">{{ n }}세트</button>
               </div>
             </div>
-            <ScoreFlow v-if="flowEvents.length" :events="flowEvents" :home="match.home.name" :away="match.away.name" />
-            <p v-else class="empty small">이 세트는 아직 득점이 없습니다.</p>
+            <Transition name="swap" mode="out-in">
+              <ScoreFlow v-if="flowEvents.length" :key="shownSet" :events="flowEvents" :home="match.home.name" :away="match.away.name"
+                         :live="!finished && shownSet === s.current_set && s.set_open" />
+              <p v-else :key="`e${shownSet}`" class="empty small">이 세트는 아직 득점이 없습니다.</p>
+            </Transition>
           </section>
 
           <section class="card">
             <div class="card-head">
               <h2>{{ metricsView === 'set' ? `${shownSet}세트 지표` : '경기 전체 지표' }}</h2>
-              <div class="tabs" role="group" aria-label="지표 범위">
+              <div v-glider class="tabs" role="group" aria-label="지표 범위">
                 <button type="button" class="tab" :aria-pressed="metricsView === 'set'" @click="metricsView = 'set'">세트</button>
                 <button type="button" class="tab" :aria-pressed="metricsView === 'match'" @click="metricsView = 'match'">전체</button>
               </div>
@@ -210,14 +249,14 @@ function describe(p) {
 
         <section class="card">
           <div class="card-head"><h2>최근 득점</h2><span class="muted small">새 득점이 위에 표시됩니다</span></div>
-          <ol v-if="recent.length" class="feed">
+          <TransitionGroup v-if="recent.length" tag="ol" name="item" class="feed">
             <li v-for="p in recent" :key="`${p.set}-${p.point_no}`" :class="sideOf(p.winner)">
               <span class="score">{{ p.home_score }}:{{ p.away_score }}</span>
               <span class="set muted small">{{ p.set }}세트</span>
               <span class="who">{{ name(p.winner) }}</span>
               <span class="what">{{ describe(p) }}</span>
             </li>
-          </ol>
+          </TransitionGroup>
           <p v-else class="empty small">아직 득점이 없습니다.</p>
         </section>
       </template>
@@ -231,7 +270,6 @@ function describe(p) {
 </template>
 
 <style scoped>
-.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .top { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .chips { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .mode { display: inline-flex; align-items: center; gap: 6px; padding: 1px 10px; border-radius: 999px; font-weight: 700; font-size: .78rem; }
@@ -247,20 +285,35 @@ function describe(p) {
 .note { margin: var(--space-3) 0 0; padding: 8px 12px; background: var(--color-muted); border-radius: 8px; }
 
 .board { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: var(--space-4); margin: var(--space-4) 0 var(--space-2); }
-.team { display: flex; flex-direction: column; align-items: center; gap: 2px; color: var(--color-foreground); text-align: center; min-width: 0; }
+.team { position: relative; display: flex; flex-direction: column; align-items: center; gap: 2px; color: var(--color-foreground);
+        text-align: center; min-width: 0; padding: 6px 4px; border-radius: 12px; isolation: isolate; }
+/* the side that just scored glows once */
+.glow { position: absolute; inset: 0; z-index: -1; border-radius: inherit; animation: glow 1.1s var(--ease-out) both; }
+.home .glow { background: radial-gradient(closest-side, color-mix(in srgb, var(--color-home) 22%, transparent), transparent); }
+.away .glow { background: radial-gradient(closest-side, color-mix(in srgb, var(--color-away) 24%, transparent), transparent); }
+@keyframes glow { from { opacity: 0; transform: scale(.85); } 25% { opacity: 1; transform: scale(1); } to { opacity: 0; } }
 .team:hover { text-decoration: none; }
 .team .side { color: var(--color-muted-foreground); }
 .tname { font-size: 1.35rem; font-weight: 800; overflow-wrap: anywhere; }
 .team.home .tname { color: var(--color-home); }
 .team.away .tname { color: var(--color-away); }
 .serve { display: inline-flex; align-items: center; gap: 4px; min-height: 20px; font-weight: 700; color: var(--color-foreground); }
-.serve svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.2; visibility: hidden; }
-.serve.on svg { visibility: visible; }
+.serve svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.2; opacity: 0; transform: scale(.4) rotate(-90deg);
+             transition: opacity var(--dur-fast) linear, transform var(--dur-slow) var(--ease-spring); }
+.serve.on svg { opacity: 1; transform: none; }
 .center { text-align: center; font-variant-numeric: tabular-nums; }
 .sets { display: flex; justify-content: center; gap: 8px; font-size: 1.5rem; font-weight: 800; color: var(--color-muted-foreground); }
 .set-label { color: var(--color-muted-foreground); margin: 2px 0; }
 .points { display: flex; justify-content: center; align-items: baseline; gap: 10px; font-size: 3.2rem; line-height: 1.05; font-weight: 800; }
-.points span, .sets span { color: var(--color-muted-foreground); font-weight: 500; }
+.points > span, .sets > span { color: var(--color-muted-foreground); font-weight: 500; } /* the colon only */
+.points b, .sets b { position: relative; }
+/* "+1" rises from the digit that changed */
+.plus { position: absolute; left: 50%; top: -.1em; font-style: normal; font-size: .9rem; font-weight: 800; pointer-events: none;
+        animation: rise 1.1s var(--ease-out) both; }
+@keyframes rise { from { opacity: 0; transform: translate(-50%, 6px); } 20% { opacity: 1; } to { opacity: 0; transform: translate(-50%, -22px); } }
+.move { display: inline-block; font-weight: 700; margin-right: 6px; padding: 0 8px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+.move.home { color: var(--color-home); background: var(--color-primary-soft); }
+.move.away { color: var(--color-accent); background: var(--color-accent-soft); }
 .h { color: var(--color-home); }
 .a { color: var(--color-away); }
 .under { display: flex; flex-direction: column; align-items: center; gap: 6px; }
@@ -280,11 +333,17 @@ function describe(p) {
 .feed { list-style: none; margin: 0; padding: 0; }
 .feed li { display: grid; grid-template-columns: 56px 44px minmax(84px, auto) 1fr; gap: 10px; align-items: baseline;
            padding: 7px 4px; border-bottom: 1px solid var(--color-border-soft); }
+/* a new point slides in and its row is tinted for a moment */
+.feed li.item-enter-active { animation: tint 1.6s var(--ease-out); }
+.feed li.home.item-enter-active { --tint: var(--color-primary-soft); }
+.feed li.away.item-enter-active { --tint: var(--color-accent-soft); }
+@keyframes tint { from { background: var(--tint); } to { background: transparent; } }
 .feed .score { font-weight: 800; font-variant-numeric: tabular-nums; }
 .feed .home .score, .feed .home .who { color: var(--color-home); }
 .feed .away .score, .feed .away .who { color: var(--color-away); }
 .feed .who { font-weight: 700; }
 .source { margin-top: var(--space-4); text-align: center; }
+@media (prefers-reduced-motion: reduce) { .glow, .plus { display: none; } }
 @media (max-width: 560px) {
   .tname { font-size: 1.05rem; }
   .points { font-size: 2.4rem; }

@@ -7,6 +7,7 @@ import AsyncState from '@/components/AsyncState.vue'
 import FavoriteButton from '@/components/FavoriteButton.vue'
 import PercentileBars from '@/components/PercentileBars.vue'
 import PlayerForm from '@/components/PlayerForm.vue'
+import PlayerRatingCard from '@/components/PlayerRatingCard.vue'
 import PlayerStyle from '@/components/PlayerStyle.vue'
 import RelatedArticles from '@/components/RelatedArticles.vue'
 import SortableTable from '@/components/SortableTable.vue'
@@ -32,6 +33,11 @@ const props = defineProps({ code: { type: String, required: true } })
 const route = useRoute()
 const data = ref(null)
 const season = ref(route.query.season || '')
+// season code -> "2025–2026" from the season names in the career rows (falls back to the code)
+const seasonYears = (code) => {
+  const m = data.value?.career.find((r) => r.season.code === code)?.season.name.match(/(\d{4})~(\d{4})/)
+  return m ? `${m[1]}–${m[2]}` : code
+}
 const state = ref({ loading: true, error: null })
 
 async function load() {
@@ -64,23 +70,28 @@ watch(season, (v) => { if (data.value && v !== data.value.season.code) load() })
         <FavoriteButton kind="player" :code="data.player.code" :name="data.player.name" class="fav-btn" />
       </div>
 
+      <section v-if="data.ratings" class="card">
+        <h2>능력치 카드 <span class="muted small">정규리그 · 같은 성별·포지션 비교</span></h2>
+        <PlayerRatingCard :ratings="data.ratings" :season="data.season.code" :gender="data.player.gender" />
+      </section>
+
       <div :class="{ 'grid-2': data.profile && data.form }">
-        <section class="card" v-if="data.profile">
+        <section v-reveal class="card" v-if="data.profile">
           <h2>포지션 내 위치 <span class="muted small">{{ data.season.years }} 정규리그</span></h2>
           <PercentileBars :profile="data.profile" />
         </section>
-        <section class="card" v-if="data.form">
+        <section v-reveal class="card" v-if="data.form">
           <h2>최근 폼 <span class="muted small">{{ data.season.years }} 시즌</span></h2>
           <PlayerForm :form="data.form" />
         </section>
       </div>
 
-      <section class="card" v-if="data.style">
+      <section v-reveal class="card" v-if="data.style">
         <h2>선수 유형과 비슷한 선수 <span class="muted small">{{ data.season.years }} 정규리그</span></h2>
         <PlayerStyle :style="data.style" :season="data.season.code" />
       </section>
 
-      <section class="card">
+      <section v-reveal class="card">
         <h2>시즌별 기록 <span class="muted small">정규리그</span></h2>
         <div class="table-wrap">
           <table class="data">
@@ -101,11 +112,11 @@ watch(season, (v) => { if (data.value && v !== data.value.season.code) load() })
         <p v-if="!data.career.length" class="empty">정규리그 기록이 없습니다.</p>
       </section>
 
-      <section class="card">
+      <section v-reveal class="card">
         <div class="card-head">
           <h2>경기별 기록</h2>
           <select v-model="season" aria-label="시즌">
-            <option v-for="s in data.seasons" :key="s" :value="s">{{ s }} 시즌</option>
+            <option v-for="s in data.seasons" :key="s" :value="s">{{ seasonYears(s) }} 시즌</option>
           </select>
         </div>
         <AsyncState :loading="state.loading" :error="null" :empty="!data.matches.length" empty-text="이 시즌 출전 기록이 없습니다.">

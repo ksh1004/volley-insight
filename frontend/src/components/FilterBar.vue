@@ -12,7 +12,7 @@ const filters = useFiltersStore()
     <select :value="filters.season" aria-label="시즌" @change="filters.set({ season: $event.target.value })">
       <option v-for="s in filters.seasons" :key="s.code" :value="s.code">{{ s.years.replace('-', '–') }} 시즌</option>
     </select>
-    <div class="tabs" role="group" aria-label="남녀부">
+    <div v-glider class="tabs" role="group" aria-label="남녀부">
       <button v-if="allGenders" type="button" class="tab" :aria-pressed="filters.gender === ''" @click="filters.set({ gender: '' })">전체</button>
       <button v-for="(label, g) in GENDERS" :key="g" type="button" class="tab" :aria-pressed="filters.gender === g"
               @click="filters.set({ gender: g })">{{ label }}</button>

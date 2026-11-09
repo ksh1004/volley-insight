@@ -13,11 +13,12 @@ def centroid(**z):
     return {f: z.get(f, 0.0) for f in NAMES}
 
 
-def test_old_position_codes_are_mapped():
-    assert normalize_position("018", "L") == "OH"
+def test_current_codes_are_kept_and_only_old_ones_mapped():
+    # curated data already has current codes: L is a libero in every season (not mapped twice)
+    assert normalize_position("018", "L") == "L"
+    assert normalize_position("010", "OH") == "OH"
     assert normalize_position("018", "Li") == "L"
     assert normalize_position("018", "C") == "MB"
-    assert normalize_position("019", "L") == "L"
     assert normalize_position("022", "OH") == "OH"
 
 

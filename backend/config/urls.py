@@ -31,6 +31,7 @@ urlpatterns = [
     re_path(rf"^api/matches/{MATCH_KEY}$", matches.MatchDetailView.as_view(), name="match-detail"),
     re_path(rf"^api/matches/{MATCH_KEY}/rallies$", matches.RallyView.as_view(), name="match-rallies"),
     path("api/predictions", analytics.PredictionCheckView.as_view(), name="predictions"),
+    path("api/ratings", analytics.RatingBoardView.as_view(), name="ratings"),
     path("api/live", live.LiveListView.as_view(), name="live"),
     re_path(rf"^api/live/{MATCH_KEY}$", live.LiveDetailView.as_view(), name="live-detail"),
     re_path(rf"^api/live/{MATCH_KEY}/stream$", live.stream, name="live-stream"),

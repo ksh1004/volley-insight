@@ -65,6 +65,7 @@ def test_collector_publishes_volleyball_only_and_survives_a_bad_feed():
                       naver_id="")
     assert c.run() == 1
     assert c.urls == ["https://www.newsis.com/view/NISX1"]
+    assert set(c.titles) == set(c.urls) and all(c.titles.values())  # the DAG matches merged articles by title
     assert c.failures == ["bad: OSError"]
     articles = [m for m in pub.messages if m[0] == "news.article"]
     assert articles[0][1] == c.urls[0] and articles[0][2]["source"] == "news"

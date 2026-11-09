@@ -25,7 +25,7 @@ const NAV = [
         </svg>
         <span>배구 전력 분석</span>
       </RouterLink>
-      <nav class="nav" aria-label="주 메뉴">
+      <nav v-glider:underline="'.is-active'" class="nav" aria-label="주 메뉴">
         <RouterLink v-for="n in NAV" :key="n.to" :to="n.to" class="nav-link"
                     :exact-active-class="n.exact ? 'is-active' : ''" :active-class="n.exact ? '' : 'is-active'">{{ n.label }}</RouterLink>
       </nav>
@@ -39,7 +39,11 @@ const NAV = [
     </div>
   </header>
   <main id="main" class="wrap app-main" tabindex="-1">
-    <RouterView :key="$route.fullPath" />
+    <RouterView v-slot="{ Component, route }">
+      <Transition name="page" mode="out-in">
+        <div :key="route.fullPath" class="page"><component :is="Component" /></div>
+      </Transition>
+    </RouterView>
   </main>
   <footer class="app-footer">
     <div class="wrap">
@@ -103,6 +107,7 @@ h2 { font-size: 1.05rem; margin: 0 0 var(--space-3); color: var(--color-heading)
             border-bottom: 2px solid transparent; transition: color .15s var(--ease), border-color .15s var(--ease); }
 .nav-link:hover { color: var(--color-foreground); text-decoration: none; }
 .nav-link.is-active { color: var(--color-primary); border-bottom-color: var(--color-primary); font-weight: 700; }
+.nav.glider-ready .nav-link.is-active { border-bottom-color: transparent; } /* the sliding underline (v-glider) draws it */
 .account { display: flex; align-items: center; gap: 6px; flex-shrink: 0; min-height: 36px; padding: 0 12px; border-radius: 999px;
            border: 1px solid var(--color-border); color: var(--color-foreground); font-size: .88rem; font-weight: 600; white-space: nowrap; }
 .account:hover { border-color: var(--color-primary); color: var(--color-primary); text-decoration: none; }

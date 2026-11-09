@@ -174,6 +174,58 @@ class PlayerStyle(PipelineModel):
         constraints = [models.UniqueConstraint(fields=["player", "season"], name="uq_player_style")]
 
 
+class PlayerRating(PipelineModel):
+    """Position rating of a player-season for the player card: each ability and an overall score, 1-99 where 60 is
+    the average qualified player of the same gender and position (72 = one standard deviation better).
+    Written by spark_jobs/player_ratings.py; the abilities and why they were chosen are described there."""
+
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="ratings")
+    season = models.ForeignKey(Season, on_delete=models.CASCADE, related_name="+")
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="+")
+    gender = models.CharField(max_length=1)
+    position = models.CharField(max_length=2)
+    sets = models.PositiveSmallIntegerField()
+    qualified = models.BooleanField(help_text="played at least a third of the team's sets (in the reference)")
+    provisional = models.BooleanField(help_text="not qualified or under 30 sets: scores pulled toward the average")
+    overall = models.PositiveSmallIntegerField(null=True, help_text="weighted abilities, 1-99")
+    abilities = models.JSONField(default=list, help_text="[{key, label, weight, score, z, stats: [{metric, label, "
+                                                         "unit, value}], note}] in the position's order")
+    extra = models.JSONField(default=dict, help_text="numbers shown beside the card, e.g. 세트당 세트 성공 for setters")
+
+    class Meta:
+        db_table = "player_rating"
+        constraints = [models.UniqueConstraint(fields=["player", "season"], name="uq_player_rating")]
+        indexes = [models.Index(fields=["season", "gender", "position"], name="ix_player_rating_group")]
+
+
+class PlayerCareerRating(PipelineModel):
+    """Career card of a player at one position: each ability is his season scores averaged with the sets played as
+    weights (each season was scored against its own era), the record behind it pooled over his seasons, and the
+    overall the weighted average of those abilities. Written by spark_jobs/player_ratings.py with PlayerRating."""
+
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="career_ratings")
+    gender = models.CharField(max_length=1)
+    position = models.CharField(max_length=2)
+    seasons = models.PositiveSmallIntegerField(help_text="rated seasons at this position")
+    qualified_seasons = models.PositiveSmallIntegerField(help_text="seasons with at least a third of the team's sets")
+    sets = models.PositiveIntegerField()
+    first_season = models.ForeignKey(Season, on_delete=models.CASCADE, related_name="+")
+    last_season = models.ForeignKey(Season, on_delete=models.CASCADE, related_name="+")
+    best_season = models.ForeignKey(Season, on_delete=models.CASCADE, related_name="+", null=True,
+                                    help_text="highest overall among the qualified seasons (any season if none)")
+    best_overall = models.PositiveSmallIntegerField(null=True)
+    qualified = models.BooleanField(help_text="3+ qualified seasons: ranked all-time")
+    overall = models.PositiveSmallIntegerField(null=True, help_text="weighted abilities, 1-99")
+    abilities = models.JSONField(default=list, help_text="same shape as PlayerRating.abilities; stats may carry a "
+                                                         "period when pooled over part of the career")
+    extra = models.JSONField(default=dict)
+
+    class Meta:
+        db_table = "player_rating_career"
+        constraints = [models.UniqueConstraint(fields=["player", "position"], name="uq_player_rating_career")]
+        indexes = [models.Index(fields=["gender", "position"], name="ix_player_rating_career_group")]
+
+
 class PredictionBacktest(PipelineModel):
     """Walk-forward test of a model version (ANL-10): each season predicted by a model trained only on the seasons
     before it, with the pre-match Elo probability of the same match as the baseline. Written by train_model.py."""

@@ -76,6 +76,102 @@ class TeamAnalysisTests(TestCase):
         self.assertIn(attack["score"], (0, 50, 100))
         self.assertEqual(r["form"], [])  # one game: no form yet
 
+    def test_early_season_rating_includes_the_end_of_last_season(self):
+        from datetime import datetime, timezone as tz
+
+        from matches.models import Match
+        from matches.tests import make_league
+
+        from league.models import Competition, Season, Team
+
+        from .models import TeamRating
+
+        finished, _ = make_league()
+        team = Team.objects.get(code="1009")
+        old = Season.objects.create(code="021", name="2024~2025 V-리그", years="2024-2025")
+        comp = Competition.objects.create(season=old, gcode="001", league_code="201", type="REGULAR", name="정규리그")
+        for n in range(12):
+            m = Match.objects.create(competition=comp, game_no=n + 1, round=1, gender="M", home_team=team,
+                                     away_team=finished.home_team, scheduled_at=datetime(2025, 1, 1 + n, tzinfo=tz.utc),
+                                     status="CONFIRMED", home_sets=3, away_sets=1)
+            TeamRating.objects.create(team=team, season=old, match=m, rated_on=m.scheduled_at.date(),
+                                      rating=1500 + n, rating_change=1, win_prob="0.5")
+        TeamRating.objects.create(team=team, season=finished.competition.season, match=finished,
+                                  rated_on=finished.scheduled_at.date(), rating=1510, rating_change=3, win_prob="0.5")
+        rating = self.client.get("/api/teams/1009?season=022").json()["rating"]
+        self.assertEqual(len(rating["history"]), 1)
+        self.assertEqual(rating["previous"]["season"], {"code": "021", "years": "2024-2025"})
+        tail = rating["previous"]["history"]
+        self.assertEqual([p["rating"] for p in tail], [1500.0 + n for n in range(2, 12)])  # last 10, oldest first
+
+
+class PlayerRatingApiTests(TestCase):
+    """Position ratings (player cards): the leaderboard and the card on the player page."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from league.models import Player, Season, Team
+        from matches.tests import make_league
+
+        from .models import PlayerCareerRating, PlayerRating
+
+        make_league()
+        season = Season.objects.get(code="022")
+        old = Season.objects.create(code="021", name="2024~2025 V-리그", years="2024-2025")
+        team = Team.objects.get(code="1009")
+
+        def card(player, s, overall, qualified=True, receive=70):
+            return PlayerRating.objects.create(
+                player=player, season=s, team=team, gender="M", position="OP", sets=90, qualified=qualified,
+                provisional=not qualified, overall=overall,
+                abilities=[{"key": "scoring", "label": "득점력", "weight": 25, "score": receive, "z": 0.8,
+                            "stats": [{"metric": "points_ps", "label": "세트당 득점", "unit": "n2", "value": 4.1}],
+                            "note": ""}],
+                extra={})
+        cls.star = Player.objects.get(code="1000525")
+        cls.other = Player.objects.create(code="1000777", name="두번째", gender="M", position="OP")
+        cls.rookie = Player.objects.create(code="1000888", name="신인", gender="M", position="OP")
+        card(cls.star, season, 81, receive=84)
+        card(cls.star, old, 74, receive=70)
+        card(cls.other, season, 66)
+        card(cls.rookie, season, 90, qualified=False)
+
+        def career(player, overall, qualified=True):
+            return PlayerCareerRating.objects.create(
+                player=player, gender="M", position="OP", seasons=2, qualified_seasons=3 if qualified else 1, sets=180,
+                first_season=old, last_season=season, best_season=season, best_overall=81, qualified=qualified,
+                overall=overall, abilities=[{"key": "scoring", "label": "득점력", "weight": 25, "score": overall,
+                                             "z": None, "note": "",
+                                             "stats": [{"metric": "serve_pressure", "label": "서브 압박", "unit": "pct",
+                                                        "value": 0.41, "period": "2023–24부터"}]}], extra={})
+        career(cls.star, 78)
+        career(cls.other, 80)
+        career(cls.rookie, 95, qualified=False)
+
+    def test_board_ranks_qualified_players_by_overall(self):
+        r = self.client.get("/api/ratings", {"season": "022", "gender": "M", "position": "OP"}).json()
+        assert r["position_name"] == "아포짓"
+        assert [(x["rank"], x["player"]["name"], x["overall"]) for x in r["rows"]] == [(1, "아라우조", 81), (2, "두번째", 66)]
+        assert r["abilities"] == [{"key": "scoring", "label": "득점력", "weight": 25}]
+        with_all = self.client.get("/api/ratings", {"season": "022", "gender": "M", "position": "OP", "all": "1"}).json()
+        assert with_all["rows"][0]["player"]["name"] == "신인" and with_all["rows"][0]["rank"] is None  # shown, not ranked
+        assert self.client.get("/api/ratings", {"gender": "M", "position": "XX"}).status_code == 400
+        assert self.client.get("/api/ratings", {"position": "OP"}).status_code == 400  # gender is required
+
+    def test_player_page_carries_every_season_and_the_career_card(self):
+        ratings = self.client.get("/api/players/1000525", {"season": "022"}).json()["ratings"]
+        old, now = ratings["seasons"]  # oldest first
+        assert (old["season"]["code"], old["previous"], old["rank"]) == ("021", None, 1)
+        assert (now["overall"], now["rank"], now["peers"], now["team"]["code"]) == (81, 1, 2, "1009")
+        assert now["previous"] == {"season": {"code": "021", "years": "2024-2025"}, "overall": 74,
+                                   "abilities": {"scoring": 70}}
+        assert now["abilities"][0]["stats"][0]["label"] == "세트당 득점" and "z" not in now["abilities"][0]
+        [career] = ratings["careers"]
+        assert (career["overall"], career["rank"], career["peers"]) == (78, 2, 2)  # the 95 career is not ranked
+        assert career["first"] == {"code": "021", "years": "2024-2025"} and career["best"]["overall"] == 81
+        assert career["abilities"][0]["stats"][0]["period"] == "2023–24부터"
+        assert self.client.get("/api/players/1000999", {"season": "022"}).json()["ratings"] is None
+
 
 class ModelManagementTests(TestCase):
     """ADM-05: the admin page lists MLflow versions and switches the champion; MLflow and Airflow are faked."""

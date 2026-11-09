@@ -29,9 +29,9 @@ from kovo_tasks import pipeline as p
 def news_collect():
     @task
     def collect() -> dict:
-        batch, urls, failures = p.collect_news()
+        batch, urls, failures, titles = p.collect_news()
         print(f"{len(urls)} volleyball article(s) published; failed feeds: {failures or 'none'}")
-        return {"batch": batch, "urls": urls, "failures": failures}
+        return {"batch": batch, "urls": urls, "failures": failures, "titles": titles}
 
     @task.sensor(poke_interval=60, timeout=1800, mode="reschedule")
     def wait_for_raw(result: dict) -> bool:
@@ -39,7 +39,7 @@ def news_collect():
 
     @task.sensor(poke_interval=30, timeout=900, mode="reschedule")
     def wait_for_index(result: dict) -> bool:
-        in_db, in_es = p.articles_stored(result["urls"])
+        in_db, in_es = p.articles_stored(result["urls"], result.get("titles"))
         print(f"stored: PostgreSQL {in_db}/{len(result['urls'])}, Elasticsearch {in_es}/{len(result['urls'])}")
         return in_db == in_es == len(result["urls"])
 

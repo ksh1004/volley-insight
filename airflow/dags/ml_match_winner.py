@@ -34,7 +34,15 @@ def ml_weekly_retrain():
 @dag(dag_id="ml_daily_predict", schedule="0 7 * * *", start_date=START, catchup=False, max_active_runs=1,
      default_args=DEFAULT_ARGS, on_failure_callback=alerts.on_dag_failure, tags=["ml"], doc_md=__doc__)
 def ml_daily_predict():
-    @task
+    # wait while kovo_daily / kovo_reprocess is curating, so the features include the newest results;
+    # after 3 hours the wait fails (and alerts) but the predictions are still made with what is there
+    @task.sensor(poke_interval=120, timeout=3 * 3600, mode="reschedule", retries=0)
+    def wait_for_curation() -> bool:
+        busy = p.curation_running()
+        print("waiting for:", ", ".join(busy) if busy else "nothing")
+        return not busy
+
+    @task(trigger_rule="all_done")
     def build_features():
         p.run_spark_job("build_features.py")
 
@@ -42,7 +50,7 @@ def ml_daily_predict():
     def predict():
         p.run_spark_job("predict_matches.py")
 
-    build_features() >> predict()
+    wait_for_curation() >> build_features() >> predict()
 
 
 ml_weekly_retrain()

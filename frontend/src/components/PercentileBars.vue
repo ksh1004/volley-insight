@@ -1,11 +1,16 @@
 <script setup>
 // Player indicators with the percentile among qualified players of the same position (ANL-05).
 // Shows the indicators that matter for the position; the percentile is written as text, the bar only repeats it.
-import { computed } from 'vue'
+// Motion: the bars fill from the left one after another when first seen, and the percentile counts up with them.
+import { computed, ref } from 'vue'
 import { POSITIONS } from '@/constants/volley'
+import AnimatedNumber from '@/motion/AnimatedNumber.vue'
+import { useInView } from '@/motion/core'
 import { num } from '@/utils/format'
 
 const props = defineProps({ profile: { type: Object, required: true } })
+const el = ref(null)
+const seen = useInView(el)
 
 const LABELS = {
   attack_success_rate: ['공격 성공률', (v) => `${num(v, 1)}%`],
@@ -31,7 +36,7 @@ const tier = (p) => (p == null ? '' : p >= 80 ? 'top' : p >= 50 ? 'mid' : 'low')
 </script>
 
 <template>
-  <div>
+  <div ref="el">
     <p class="small muted lead">
       같은 시즌 {{ POSITIONS[profile.position] || '같은 포지션' }} 중 순위 자격이 있는 선수와 비교한 백분위예요.
       100에 가까울수록 상위예요.
@@ -40,11 +45,12 @@ const tier = (p) => (p == null ? '' : p >= 80 ? 'top' : p >= 50 ? 'mid' : 'low')
       이 시즌 출전 세트({{ profile.sets }})가 순위 자격(팀 세트의 1/3)에 못 미쳐 백분위는 계산하지 않았어요.
     </p>
     <ul class="bars">
-      <li v-for="r in rows" :key="r.key">
+      <li v-for="(r, i) in rows" :key="r.key">
         <span class="label small">{{ r.label }}</span>
         <span class="value">{{ r.value }}</span>
-        <span class="track" aria-hidden="true"><i :class="tier(r.pct)" :style="{ width: `${r.pct ?? 0}%` }" /></span>
-        <span class="pct small" :class="tier(r.pct)">{{ r.pct == null ? '-' : `${r.pct}` }}</span>
+        <span class="track" aria-hidden="true"><i :class="tier(r.pct)"
+          :style="{ transform: `scaleX(${seen ? (r.pct ?? 0) / 100 : 0})`, transitionDelay: `${i * 60}ms` }" /></span>
+        <span class="pct small" :class="tier(r.pct)"><AnimatedNumber :value="r.pct" count-up /></span>
       </li>
     </ul>
   </div>
@@ -59,7 +65,8 @@ const tier = (p) => (p == null ? '' : p >= 80 ? 'top' : p >= 50 ? 'mid' : 'low')
 .label { color: var(--color-muted-foreground); }
 .value { font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
 .track { height: 8px; background: var(--color-muted); border-radius: 4px; overflow: hidden; }
-.track i { display: block; height: 100%; border-radius: 4px; background: var(--color-muted-foreground); }
+.track i { display: block; height: 100%; border-radius: 4px; background: var(--color-muted-foreground);
+           transform-origin: left center; transition: transform var(--dur-chart) var(--ease-out); }
 .track i.top { background: var(--color-primary); }
 .track i.mid { background: color-mix(in srgb, var(--color-primary) 55%, white); }
 .pct { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }

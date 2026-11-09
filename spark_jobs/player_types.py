@@ -10,7 +10,7 @@
 
 Who is in: players with at least a third of their team's sets (the ranking rule) and 10 sets; groups are fitted on
 players with 30+ sets so a handful of sets cannot shape them (fewer sets: assigned, marked provisional).
-Old position codes (up to season 018: L left, C centre, R right, Li libero) are mapped to the current ones.
+Positions come from the curated data, which already uses the current codes for every season.
 
 Run: docker compose exec airflow sh /opt/airflow/spark_jobs/submit.sh player_types.py   (also in kovo_daily)
 """
@@ -47,14 +47,17 @@ FEATURES = {
 }
 NAMES = list(FEATURES)
 POSITION_NAMES = {"OH": "아웃사이드 히터", "OP": "아포짓", "MB": "미들 블로커", "S": "세터", "L": "리베로"}
-OLD_POSITIONS = {"L": "OH", "C": "MB", "R": "OP", "Li": "L", "S": "S"}  # seasons up to 018
+# Up to season 018 KOVO used L (left), C (centre), R (right), Li (libero). curate_kovo.py already stores the current
+# codes for every season, so "L" here always means libero. Only codes that cannot be current ones are mapped (a
+# second mapping of "L" turned the 2005-2019 liberos into outside hitters until 2026-11-09).
+OLD_ONLY = {"C": "MB", "R": "OP", "Li": "L"}
 
 
 # ---------------------------------------------------------------- pure helpers (tested in spark_jobs/tests)
 def normalize_position(season_code, position):
     if not position:
         return ""
-    return OLD_POSITIONS.get(position, position) if season_code <= "018" else position
+    return OLD_ONLY.get(position, position)
 
 
 def choose_k(scores, tolerance=0.10):

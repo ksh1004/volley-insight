@@ -163,3 +163,48 @@ def test_parse_games_and_dates_for_reprocess():
         except ValueError:
             pass
     assert p.merge_games({"023": [9]}, {"023": [10, 9], "022": [1]}) == {"022": [1], "023": [9, 10]}
+
+
+def test_curation_running_asks_airflow_for_each_curating_dag():
+    class Resp:
+        def __init__(self, n):
+            self.n = n
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"total_entries": self.n}
+
+    class Http:
+        def __init__(self, running):
+            self.running, self.asked = running, []
+
+        def get(self, url, params, timeout):
+            dag = url.split("/dags/")[1].split("/")[0]
+            self.asked.append((dag, sorted(v for k, v in params if k == "state")))
+            return Resp(1 if dag in self.running else 0)
+
+    http = Http({"kovo_daily"})
+    assert p.curation_running(http) == ["kovo_daily"]
+    assert http.asked == [("kovo_daily", ["queued", "running"]), ("kovo_reprocess", ["queued", "running"])]
+    assert p.curation_running(Http(set())) == []
+
+
+def test_title_key_matches_the_article_enricher():
+    sys.path.insert(0, str(ROOT / "flink_jobs"))
+    from article_tags import title_key as enricher_key
+
+    for t in ["[프로배구] 대한항공, 한국전력 꺾고 3연승 질주(종합)", "대한항공, 한국전력 꺾고 3연승 질주",
+              "[포토] 김연경 스파이크", "[프로배구 전적] 3일", "", "OK저축은행 2연패 탈출 (2보)"]:
+        assert p.title_key(t) == enricher_key(t), t
+
+
+def test_resolve_stored_counts_an_article_merged_by_title():
+    urls = ["https://a.example/1", "https://b.example/9", "https://c.example/5"]
+    titles = {"https://a.example/1": "[프로배구] 대한항공, 한국전력 꺾고 3연승 질주",
+              "https://b.example/9": "대한항공, 한국전력 꺾고 3연승 질주(종합)",   # same story, other outlet
+              "https://c.example/5": "흥국생명 외국인 선수 교체 발표 예정"}           # not stored at all
+    recent = [("https://a.example/1", titles["https://a.example/1"])]
+    out = p.resolve_stored(urls, titles, {"https://a.example/1"}, recent)
+    assert out == {"https://a.example/1": "https://a.example/1", "https://b.example/9": "https://a.example/1"}

@@ -110,14 +110,15 @@ const rows = computed(() => {
         </div>
       </section>
 
-      <section class="card">
+      <section v-reveal class="card">
         <h2>전력 지수 추이 <span class="muted small">Elo · 정규리그와 포스트시즌</span></h2>
-        <RatingChart :history="data.rating.history" :team-name="data.team.name"
-                     :rank="ratingRank?.rank" :teams="ratingRank?.teams" />
+        <RatingChart :key="data.season.code" :history="data.rating.history" :team-name="data.team.name"
+                     :rank="ratingRank?.rank" :teams="ratingRank?.teams" :previous="data.rating.previous"
+                     :season-years="data.season.years" />
       </section>
 
       <div class="grid-2">
-        <section class="card">
+        <section v-reveal class="card">
           <h2>강약점 <span class="muted small">정규리그 {{ data.profile.games }}경기 · 리그 {{ data.profile.axes[0]?.teams || '-' }}팀 중 순위</span></h2>
           <RadarChart v-if="data.profile.games && data.profile.axes.some((a) => a.score != null)"
                       :axes="data.profile.axes" :team="data.team.name" />
@@ -126,7 +127,7 @@ const rows = computed(() => {
             시즌 초반이라 경기 수가 적어 순위가 크게 바뀔 수 있습니다.
           </p>
         </section>
-        <section class="card">
+        <section v-reveal class="card">
           <h2>리그 평균과 비교 <span class="muted small">정규리그</span></h2>
           <LeagueCompare v-if="rows.length" :rows="rows" />
           <p v-else class="empty">아직 끝난 경기가 없습니다.</p>
@@ -137,7 +138,7 @@ const rows = computed(() => {
         </section>
       </div>
 
-      <section class="card" v-if="data.form.length">
+      <section v-reveal class="card" v-if="data.form.length">
         <h2>선수 폼 변화 <span class="muted small">최근 5경기 vs 그 전 경기 · 뚜렷한 변화만</span></h2>
         <ul class="form-list">
           <li v-for="r in data.form" :key="r.player.code">
@@ -152,14 +153,14 @@ const rows = computed(() => {
       </section>
 
       <div class="grid-2">
-        <section class="card">
+        <section v-reveal class="card">
           <h2>최근 경기</h2>
           <div class="stack">
             <MatchCard v-for="m in data.recent" :key="m.key" :match="m" show-date />
             <p v-if="!data.recent.length" class="empty">아직 끝난 경기가 없습니다.</p>
           </div>
         </section>
-        <section class="card">
+        <section v-reveal class="card">
           <h2>다음 경기</h2>
           <div class="stack">
             <MatchCard v-for="m in data.upcoming" :key="m.key" :match="m" show-date />
@@ -168,7 +169,7 @@ const rows = computed(() => {
         </section>
       </div>
 
-      <section class="card">
+      <section v-reveal class="card">
         <h2>선수단 기록 <span class="muted small">정규리그, 출전 선수</span></h2>
         <SortableTable v-if="data.roster.length" :columns="ROSTER_COLS" :rows="data.roster" :row-key="(p) => p.player.code"
                        :initial-sort="{ key: 'points', dir: 'desc' }" caption="선수단 시즌 기록">

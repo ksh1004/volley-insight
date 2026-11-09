@@ -169,7 +169,7 @@ def collect_news(client=None, publisher=None):
     col = NewsCollector(client or NewsHttp(), publisher or KafkaPublisher())
     started = now_kst()
     n = col.run()
-    return batch_of(col, n, started), col.urls, col.failures
+    return batch_of(col, n, started), col.urls, col.failures, col.titles
 
 
 # ---------------------------------------------------------------- HDFS arrival check
@@ -328,9 +328,40 @@ def corrected_seasons(since: datetime) -> list:
         return [r[0] for r in cur.fetchall()]
 
 
-def articles_stored(urls) -> tuple[int, int]:
-    """(how many of these article URLs are in PostgreSQL, how many in Elasticsearch `articles`).
-    Flink article-enricher writes both; repeats from earlier runs are already there, so all should appear."""
+def title_key(title: str) -> str | None:
+    """Same rule as flink_jobs/article_tags.py title_key (a test keeps the two equal): the enricher stores one article
+    per key for 7 days, so a second URL of the same story is merged, not stored."""
+    import re
+    import unicodedata
+
+    t = unicodedata.normalize("NFC", title or "")
+    t = re.sub(r"^\s*(\[[^\]]*\]\s*)+", "", t)
+    t = re.sub(r"\((종합|속보|\d보|상보|영상|포토)[^)]*\)", "", t)
+    t = re.sub(r"[^0-9A-Za-z가-힣]", "", t).lower()
+    return t if len(t) >= 10 else None
+
+
+def resolve_stored(urls, titles, stored_urls, recent) -> dict:
+    """Which stored article stands for each collected URL: itself, or an article with the same title key
+    (`recent`: [(url, title)] stored in the last days). URLs with neither are missing."""
+    by_key = {}
+    for url, title in recent:
+        k = title_key(title)
+        if k and k not in by_key:
+            by_key[k] = url
+    out = {}
+    for u in urls:
+        if u in stored_urls:
+            out[u] = u
+        elif (k := title_key(titles.get(u, ""))) and k in by_key:
+            out[u] = by_key[k]
+    return out
+
+
+def articles_stored(urls, titles=None) -> tuple[int, int]:
+    """(how many of these collected articles are in PostgreSQL, how many in Elasticsearch `articles`), counting an
+    article merged into an earlier one with the same title (2026-11-09: two outlets' copies of one story kept the
+    sensor waiting until it timed out). Flink article-enricher writes both stores."""
     import hashlib
 
     import requests
@@ -338,12 +369,18 @@ def articles_stored(urls) -> tuple[int, int]:
     if not urls:
         return 0, 0
     with db_connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM article WHERE url = ANY(%s)", (list(urls),))
-        in_db = cur.fetchone()[0]
-    ids = [hashlib.sha1(u.encode()).hexdigest() for u in urls]
-    resp = requests.post(f"{ELASTICSEARCH}/articles/_count", json={"query": {"ids": {"values": ids}}}, timeout=30)
-    in_es = resp.json().get("count", 0) if resp.ok else 0
-    return in_db, in_es
+        cur.execute("SELECT url FROM article WHERE url = ANY(%s)", (list(urls),))
+        stored = {r[0] for r in cur.fetchall()}
+        recent = []
+        if len(stored) < len(set(urls)):
+            cur.execute("SELECT url, title FROM article WHERE created_at >= now() - interval '8 days'")
+            recent = cur.fetchall()
+    resolved = resolve_stored(urls, titles or {}, stored, recent)
+    sha = {u: hashlib.sha1(u.encode()).hexdigest() for u in set(resolved.values())}
+    resp = requests.post(f"{ELASTICSEARCH}/articles/_search", timeout=30,
+                         json={"query": {"ids": {"values": list(sha.values())}}, "_source": False, "size": len(sha) or 1})
+    in_index = {h["_id"] for h in resp.json()["hits"]["hits"]} if resp.ok else set()
+    return len(resolved), sum(1 for s in resolved.values() if sha[s] in in_index)
 
 
 def replay_match(key: str, speed: float, publisher=None) -> dict:
@@ -378,6 +415,11 @@ def run_player_types():
     run_spark_job("player_types.py")
 
 
+def run_player_ratings():
+    """spark-submit player_ratings.py: position ratings for the player cards (1-99 per ability), full refresh."""
+    run_spark_job("player_ratings.py")
+
+
 # ---------------------------------------------------------------- Spark
 def run_curation(seasons):
     """spark-submit curate_kovo.py on YARN (client mode; the driver runs in this Airflow worker)."""
@@ -386,6 +428,27 @@ def run_curation(seasons):
     seasons = ",".join(sorted(set(seasons)))
     SparkSubmitHook(conn_id="spark_yarn", conf=SPARK_CONF, jars=SPARK_JARS, name=f"curate-kovo-{seasons}",
                     application_args=["--seasons", seasons]).submit(f"{SPARK_JOBS}/curate_kovo.py")
+
+
+AIRFLOW_API = os.environ.get("AIRFLOW_API_URL", "http://localhost:8080").rstrip("/")
+CURATING_DAGS = ("kovo_daily", "kovo_reprocess")
+
+
+def curation_running(http=None) -> list:
+    """DAGs among CURATING_DAGS with a queued or running run (Airflow REST API; tasks cannot read the metadata DB).
+    Predictions wait for these so their features include the newest results (seen 2026-11-06 and 11-09:
+    after the PC was off, ml_daily_predict ran before kovo_daily had curated the missed games)."""
+    import requests
+
+    http = http or requests.Session()
+    busy = []
+    for dag in CURATING_DAGS:
+        resp = http.get(f"{AIRFLOW_API}/api/v2/dags/{dag}/dagRuns",
+                        params=[("state", "running"), ("state", "queued"), ("limit", "1")], timeout=10)
+        resp.raise_for_status()
+        if resp.json().get("total_entries", 0):
+            busy.append(dag)
+    return busy
 
 
 def run_marts():

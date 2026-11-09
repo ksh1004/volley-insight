@@ -1,6 +1,7 @@
 <script setup>
 // WEB-01: today's games (or the next ones), latest results, standings of both divisions, latest articles.
 // WEB-12: signed-in viewers see their favourite teams and players first, and their teams' games lead the lists.
+// Motion: sections and cards rise in as they scroll into view (v-reveal, staggered within a grid).
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getArticles, getLive, getMatches, getStandings } from '@/api/client'
 import ArticleList from '@/components/ArticleList.vue'
@@ -76,42 +77,42 @@ onMounted(async () => {
 
 <template>
   <AsyncState :loading="state.loading" :error="state.error">
-    <section v-if="live.length" class="card" aria-labelledby="live-title">
+    <section v-if="live.length" v-reveal class="card" aria-labelledby="live-title">
       <div class="card-head">
         <h2 id="live-title">진행 중 경기</h2>
         <span class="muted small">20초마다 갱신 · 누르면 실시간 화면</span>
       </div>
       <div class="match-grid">
-        <LiveCard v-for="item in live" :key="item.match.key" :item="item" />
+        <LiveCard v-for="(item, i) in live" :key="item.match.key" v-reveal="i" :item="item" />
       </div>
     </section>
 
     <FavoriteFeed />
 
-    <section class="card">
+    <section v-reveal class="card">
       <div class="card-head">
         <h2>{{ today.length ? '오늘 경기' : '다음 경기' }}</h2>
         <span class="muted small">{{ fmtFullDate(new Date().toISOString()) }}</span>
       </div>
       <div class="match-grid" v-if="today.length || upcoming.length">
-        <MatchCard v-for="m in favFirst(today.length ? today : upcoming)" :key="m.key" :match="m" :show-date="!today.length"
+        <MatchCard v-for="(m, i) in favFirst(today.length ? today : upcoming)" :key="m.key" v-reveal="i" :match="m" :show-date="!today.length"
                    :favorite="isFav(m)" />
       </div>
       <p v-else class="empty">예정된 경기가 없습니다.</p>
     </section>
 
-    <section class="card">
+    <section v-reveal class="card">
       <div class="card-head">
         <h2>최근 결과</h2>
         <RouterLink to="/schedule" class="small">전체 일정 →</RouterLink>
       </div>
       <div class="match-grid">
-        <MatchCard v-for="m in recent" :key="m.key" :match="m" show-date :favorite="isFav(m)" />
+        <MatchCard v-for="(m, i) in recent" :key="m.key" v-reveal="i" :match="m" show-date :favorite="isFav(m)" />
       </div>
     </section>
 
     <div class="grid-2">
-      <section v-for="g in ['M', 'F']" :key="g" class="card">
+      <section v-for="(g, i) in ['M', 'F']" :key="g" v-reveal="i" class="card">
         <div class="card-head">
           <h2>{{ GENDERS[g] }} 순위</h2>
           <span class="muted small">{{ latestSeason?.years }} 정규리그</span>
@@ -133,7 +134,7 @@ onMounted(async () => {
       </section>
     </div>
 
-    <section class="card">
+    <section v-reveal class="card">
       <div class="card-head">
         <h2>최신 기사</h2>
         <RouterLink to="/news" class="small">기사 더 보기 →</RouterLink>

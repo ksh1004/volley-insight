@@ -1,10 +1,12 @@
 """Reads of the analysis marts for the team and player APIs."""
-from django.db.models import Avg
+from collections import defaultdict
+
+from django.db.models import Avg, F
 
 from league.models import Season
 from matches.serializers import match_key
 
-from .models import PlayerSeasonSummary, TeamRating, TeamSeasonSummary
+from .models import PlayerCareerRating, PlayerRating, PlayerSeasonSummary, TeamRating, TeamSeasonSummary
 
 REGULAR = "201"
 
@@ -13,11 +15,7 @@ def _num(v):
     return float(v) if v is not None else None
 
 
-def rating_history(team, season):
-    """Elo after each match of the season, oldest first (ANL-01)."""
-    rows = (TeamRating.objects.filter(team=team, season=season)
-            .select_related("match__competition__season", "match__home_team", "match__away_team")
-            .order_by("rated_on", "match__scheduled_at"))
+def _rating_rows(team, rows):
     out = []
     for r in rows:
         m = r.match
@@ -29,6 +27,26 @@ def rating_history(team, season):
                     "result": "W" if won else "L", "score": f"{m.home_sets}:{m.away_sets}" if home else f"{m.away_sets}:{m.home_sets}",
                     "postseason": m.competition.league_code != REGULAR})
     return out
+
+
+def _ratings(team):
+    return TeamRating.objects.filter(team=team).select_related("match__competition__season", "match__home_team",
+                                                                "match__away_team")
+
+
+def rating_history(team, season):
+    """Elo after each match of the season, oldest first (ANL-01)."""
+    return _rating_rows(team, _ratings(team).filter(season=season).order_by("rated_on", "match__scheduled_at"))
+
+
+def rating_tail(team, season, n=10):
+    """The team's last `n` rated matches of the season before `season` (oldest first) and that season's years.
+    Shown faded before an early-season chart; empty when the team did not play the season before."""
+    prev = Season.objects.filter(code__lt=season.code).order_by("-code").first()
+    if prev is None:
+        return {"season": None, "history": []}
+    rows = list(_ratings(team).filter(season=prev).order_by("-rated_on", "-match__scheduled_at")[:n])
+    return {"season": {"code": prev.code, "years": prev.years}, "history": _rating_rows(team, reversed(rows))}
 
 
 def current_ratings(gender, season):
@@ -194,3 +212,83 @@ def team_form(team, before, season, limit=5):
     return {"form": form, "elo": _num(rating.rating) if rating else None,
             "season": {f: _num(getattr(summary, f)) for f in fields} if summary else None,
             "record": f"{summary.wins}승 {summary.losses}패" if summary else None}
+
+
+# ---------------------------------------------------------------- position ratings (player cards)
+POSITION_NAMES = {"OH": "아웃사이드 히터", "OP": "아포짓", "MB": "미들 블로커", "S": "세터", "L": "리베로"}
+CARD_KEYS = ("key", "label", "weight", "score", "stats", "note")
+
+
+def _card(r):
+    return {"position": r.position, "position_name": POSITION_NAMES.get(r.position, r.position), "overall": r.overall,
+            "sets": r.sets, "qualified": r.qualified,
+            "abilities": [{k: a.get(k) for k in CARD_KEYS} for a in r.abilities], "extra": r.extra}
+
+
+def _season(s):
+    return {"code": s.code, "years": s.years}
+
+
+def player_ratings(player):
+    """All of the player's cards (None without any): every rated season, oldest first, with its rank among the
+    qualified players of the same gender and position and the change from his latest earlier season at the same
+    position; and a career card per position (most sets first) with the all-time rank among careers of 3+
+    qualified seasons."""
+    rows = list(PlayerRating.objects.filter(player=player).select_related("season", "team").order_by("season__code"))
+    careers = list(PlayerCareerRating.objects.filter(player=player)
+                   .select_related("first_season", "last_season", "best_season").order_by("-sets", "position"))
+    if not rows and not careers:
+        return None
+    peers = defaultdict(list)  # (season id, position) -> qualified overalls, one query for all his seasons
+    if rows:
+        for sid, pos, overall in (PlayerRating.objects
+                                  .filter(gender=rows[0].gender, season_id__in={r.season_id for r in rows},
+                                          position__in={r.position for r in rows}, qualified=True,
+                                          overall__isnull=False)
+                                  .values_list("season_id", "position", "overall")):
+            peers[(sid, pos)].append(overall)
+    seasons, last_at = [], {}  # position -> his latest card at it so far
+    for r in rows:
+        group = peers[(r.season_id, r.position)]
+        prev = last_at.get(r.position)
+        seasons.append({**_card(r), "season": _season(r.season), "team": {"code": r.team.code, "name": r.team.name},
+                        "provisional": r.provisional, "peers": len(group),
+                        "rank": sum(o > r.overall for o in group) + 1 if r.qualified and r.overall is not None else None,
+                        "previous": None if prev is None else {
+                            "season": _season(prev.season), "overall": prev.overall,
+                            "abilities": {a["key"]: a.get("score") for a in prev.abilities}}})
+        last_at[r.position] = r
+    out = []
+    for c in careers:
+        ranked = PlayerCareerRating.objects.filter(gender=c.gender, position=c.position, qualified=True,
+                                                   overall__isnull=False)
+        out.append({**_card(c), "seasons": c.seasons, "qualified_seasons": c.qualified_seasons,
+                    "first": _season(c.first_season), "last": _season(c.last_season),
+                    "best": {"season": _season(c.best_season), "overall": c.best_overall} if c.best_season else None,
+                    "peers": ranked.count(),
+                    "rank": ranked.filter(overall__gt=c.overall).count() + 1
+                    if c.qualified and c.overall is not None else None})
+    return {"seasons": seasons, "careers": out}
+
+
+def rating_board(season, gender, position, include_all=False):
+    """Players of one gender and position ranked by overall (rank only among qualified players)."""
+    qs = (PlayerRating.objects.filter(season=season, gender=gender, position=position)
+          .select_related("player", "team").order_by(F("overall").desc(nulls_last=True), "player__name"))
+    if not include_all:
+        qs = qs.filter(qualified=True)
+    rows, rank, prev_overall, n = [], None, None, 0
+    for r in qs:
+        if r.qualified and r.overall is not None:
+            n += 1
+            if r.overall != prev_overall:
+                rank, prev_overall = n, r.overall
+        rows.append({"rank": rank if r.qualified and r.overall is not None else None,
+                     "player": {"code": r.player.code, "name": r.player.name},
+                     "team": {"code": r.team.code, "name": r.team.name}, "overall": r.overall, "sets": r.sets,
+                     "qualified": r.qualified, "provisional": r.provisional,
+                     "scores": {a["key"]: a.get("score") for a in r.abilities}})
+    first = qs.first()
+    abilities = [{"key": a["key"], "label": a["label"], "weight": a["weight"]} for a in first.abilities] if first else []
+    return {"position": position, "position_name": POSITION_NAMES.get(position, position), "abilities": abilities,
+            "rows": rows}

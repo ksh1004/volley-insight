@@ -89,6 +89,7 @@ onBeforeUnmount(() => { clearTimeout(timer); controller?.abort() })
            role="combobox" aria-autocomplete="list" :aria-expanded="expanded" :aria-controls="listId"
            :aria-activedescendant="active >= 0 ? optionId(active) : undefined"
            @keydown="onKey" @focus="open = items.length > 0" />
+    <Transition name="pop">
     <ul v-show="expanded" :id="listId" role="listbox" class="list" aria-label="검색 추천">
       <li v-for="(it, i) in items" :id="optionId(i)" :key="`${it.type}-${it.code}`" role="option"
           :aria-selected="i === active" class="option" :class="{ active: i === active }"
@@ -101,6 +102,7 @@ onBeforeUnmount(() => { clearTimeout(timer); controller?.abort() })
         <button type="submit" class="all" tabindex="-1" @mousedown.prevent>'{{ q.trim() }}' 기사까지 전체 검색</button>
       </li>
     </ul>
+    </Transition>
   </form>
 </template>
 
@@ -117,7 +119,8 @@ input::placeholder { color: var(--color-muted-foreground); }
 .list { position: absolute; top: calc(100% + 6px); left: 0; right: 0; min-width: 260px; margin: 0; padding: 4px; list-style: none;
         background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius);
         box-shadow: 0 8px 24px rgb(15 23 42 / .12); z-index: 20; }
-.option { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-radius: 6px; cursor: pointer; min-height: 40px; align-items: center; }
+.option { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-radius: 6px; cursor: pointer; min-height: 40px; align-items: center;
+          transition: background-color 90ms linear; }
 .option.active { background: var(--color-primary-soft); }
 .name { font-weight: 500; }
 .desc { color: var(--color-muted-foreground); font-size: .8rem; white-space: nowrap; }
@@ -125,7 +128,6 @@ input::placeholder { color: var(--color-muted-foreground); }
 .all { all: unset; display: block; width: 100%; box-sizing: border-box; padding: 8px 10px; margin-top: 2px; border-top: 1px solid var(--color-border-soft);
        color: var(--color-primary); font-size: .85rem; cursor: pointer; border-radius: 0 0 6px 6px; }
 .all:hover { background: var(--color-primary-soft); }
-.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 @media (pointer: coarse) { input { min-height: 44px; } .option { min-height: 44px; } }
 /* own row under the menu, sharing it with the account link (App.vue) */
 @media (max-width: 760px) { .search { width: auto; flex: 1 1 calc(100% - 160px); margin-left: 0; } }

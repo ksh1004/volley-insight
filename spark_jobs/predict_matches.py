@@ -3,8 +3,8 @@
   input   HDFS /features/kovo/match/ (build_features.py), MLflow model `match-winner@champion`
   output  PostgreSQL match_prediction (+ model_version), via sql/merge_predictions.sql
 
-Only matches that have not started get a prediction (re-running before kick-off refreshes it with the latest
-features). Once a match is over its prediction is frozen and is_correct is set, so the hit rate on the site
+Only matches that have not started and start within 7 days get a prediction (the merge SQL applies the horizon;
+re-running before kick-off refreshes it with the latest features). Once a match is over its prediction is frozen and is_correct is set, so the hit rate on the site
 only counts real pre-match predictions.
 
 Run: docker compose exec airflow sh /opt/airflow/spark_jobs/submit.sh predict_matches.py

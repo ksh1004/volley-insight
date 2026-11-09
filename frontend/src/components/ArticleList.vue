@@ -2,6 +2,7 @@
 // Article rows (WEB-09, WEB-14): title opens the publisher's page in a new tab; we show only title, summary
 // and publisher (NFR-06). `highlight` renders search marks: the API escapes the text (encoder=html) and adds
 // only <mark>, so v-html is limited to that.
+// Motion: rows rise in one after another; the title underline draws from the left on hover.
 import { fmtAgo, fmtFullDate } from '@/utils/format'
 
 defineProps({
@@ -13,7 +14,7 @@ defineProps({
 
 <template>
   <ul class="articles" :class="{ compact }">
-    <li v-for="a in articles" :key="a.url" class="article">
+    <li v-for="(a, i) in articles" :key="a.url" v-reveal="i" class="article">
       <a :href="a.url" target="_blank" rel="noopener noreferrer" class="title">
         <span v-if="highlight && a.highlight?.title" v-html="a.highlight.title" />
         <span v-else>{{ a.title }}</span>
@@ -42,7 +43,10 @@ defineProps({
 .article:last-child { border-bottom: 0; }
 .compact .article { padding: 8px 0; }
 .title { color: var(--color-foreground); font-weight: 500; line-height: 1.45; display: inline; }
-.title:hover { color: var(--color-primary); }
+.title:hover { color: var(--color-primary); text-decoration: none; }
+.title > span:first-child { background: linear-gradient(currentColor, currentColor) 0 100% / 0 1px no-repeat;
+                            transition: background-size var(--dur-base) var(--ease-out); }
+.title:hover > span:first-child, .title:focus-visible > span:first-child { background-size: 100% 1px; }
 .ext { width: 12px; height: 12px; margin-left: 4px; vertical-align: -1px; fill: none; stroke: var(--color-muted-foreground); stroke-width: 1.6; }
 .summary { margin: 4px 0 0; color: var(--color-muted-foreground); font-size: .9rem; display: -webkit-box;
            -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -53,6 +57,5 @@ defineProps({
 .tag.player { background: var(--color-accent-soft); color: var(--color-accent); }
 .tag:hover { text-decoration: none; outline: 1px solid currentColor; }
 :deep(mark) { background: var(--color-highlight); color: inherit; border-radius: 2px; padding: 0 1px; }
-.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 @media (pointer: coarse) { .tag { line-height: 2.2; } }
 </style>

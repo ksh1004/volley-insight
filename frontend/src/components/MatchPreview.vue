@@ -1,9 +1,13 @@
 <script setup>
 // WEB-08 match preview: win probability, set score probabilities, model accuracy, head-to-head, team comparison.
 // For finished matches it shows the pre-match prediction next to the result (ANL-10).
-import { computed } from 'vue'
+// Interaction: pointing at (or focusing) a set score explains it in words and dims the others.
+// Motion: the set-score bars fill one after another when first seen and their percentages count up with them.
+import { computed, ref } from 'vue'
 import CompareBars from '@/components/CompareBars.vue'
 import WinProbBar from '@/components/WinProbBar.vue'
+import AnimatedNumber from '@/motion/AnimatedNumber.vue'
+import { useInView } from '@/motion/core'
 import { fmtDate, num, pct } from '@/utils/format'
 
 const props = defineProps({ match: { type: Object, required: true } })
@@ -18,6 +22,18 @@ const dist = computed(() => {
   const max = Math.max(...ORDER.map((k) => probs[k] || 0))
   return ORDER.map((k) => ({ key: k, p: probs[k] || 0, top: (probs[k] || 0) === max, home: Number(k[0]) === 3 }))
 })
+const distMax = computed(() => Math.max(...dist.value.map((x) => x.p)) || 1)
+const distEl = ref(null)
+const distSeen = useInView(distEl)
+const pointed = ref(null)
+const pointedText = computed(() => {
+  const d = dist.value.find((x) => x.key === pointed.value)
+  if (!d) return ''
+  const [h, a] = d.key.split(':')
+  const winner = d.home ? m.value.home.name : m.value.away.name
+  return `${m.value.home.name} ${h}세트, ${m.value.away.name} ${a}세트로 ${winner} 승리할 확률 ${pctText(d.p)}`
+})
+const pct1 = (v) => `${v.toFixed(1)}%`
 const model = computed(() => pred.value?.model)
 const pctText = (v) => (v == null ? '-' : `${Math.round(v * 1000) / 10}%`)
 
@@ -57,13 +73,16 @@ const actualWinner = computed(() => (m.value.home_sets > m.value.away_sets ? m.v
       </p>
 
       <h3 class="sub">세트 스코어별 확률 <span class="muted small">{{ m.home.name }} 기준</span></h3>
-      <ul class="dist">
-        <li v-for="d in dist" :key="d.key" :class="{ top: d.top, home: d.home }">
+      <ul ref="distEl" class="dist" :class="{ pointing: pointed }">
+        <li v-for="(d, i) in dist" :key="d.key" :class="{ top: d.top, home: d.home, on: pointed === d.key }" tabindex="0"
+            :aria-label="`${d.key} ${pctText(d.p)}`"
+            @pointerenter="pointed = d.key" @pointerleave="pointed = null" @focus="pointed = d.key" @blur="pointed = null">
           <span class="k num">{{ d.key }}</span>
-          <span class="track"><i :style="{ width: `${Math.max(2, d.p * 100 / Math.max(...dist.map((x) => x.p)))}%` }" /></span>
-          <span class="v num">{{ pctText(d.p) }}</span>
+          <span class="track"><i :style="{ transform: `scaleX(${distSeen ? Math.max(0.02, d.p / distMax) : 0})`, transitionDelay: `${i * 70}ms` }" /></span>
+          <span class="v num"><AnimatedNumber :value="d.p * 100" :format="pct1" count-up /></span>
         </li>
       </ul>
+      <p class="pointed small" :class="{ hint: !pointedText }" aria-live="polite">{{ pointedText || '\ub9c9\ub300\uc5d0 \ub9c8\uc6b0\uc2a4\ub97c \uc62c\ub9ac\uac70\ub098 \uc120\ud0dd\ud558\uba74 \uadf8 \uacb0\uacfc\ub97c \ud480\uc5b4\uc11c \uc124\uba85\ud569\ub2c8\ub2e4.' }}</p>
       <p class="muted small legend"><span class="sw home" /> {{ m.home.name }} 승 <span class="sw away" /> {{ m.away.name }} 승</p>
 
       <div class="model small">
@@ -79,13 +98,14 @@ const actualWinner = computed(() => (m.value.home_sets > m.value.away_sets ? m.v
     <p v-else class="empty">{{ done ? '이 경기는 경기 전 예측 기록이 없어요.' : '아직 예측이 없어요. 매일 아침 7시에 갱신돼요.' }}</p>
 
     <template v-if="!done || pred">
-      <div class="grid-2 blocks">
+      <div v-reveal class="grid-2 blocks">
         <div>
           <h3 class="sub">상대 전적 <span class="muted small">통산</span></h3>
           <p v-if="!h2h?.total" class="muted small">맞대결 기록이 없어요.</p>
           <template v-else>
             <p class="h2h-total num">
-              <span class="home">{{ m.home.name }} {{ h2h.wins.home }}승</span> · <span class="away">{{ h2h.wins.away }}승 {{ m.away.name }}</span>
+              <span class="home">{{ m.home.name }} <AnimatedNumber :value="h2h.wins.home" count-up />승</span> ·
+              <span class="away"><AnimatedNumber :value="h2h.wins.away" count-up />승 {{ m.away.name }}</span>
               <span class="muted small">({{ h2h.total }}경기)</span>
             </p>
             <ol class="recent small">
@@ -127,9 +147,17 @@ const actualWinner = computed(() => (m.value.home_sets > m.value.away_sets ? m.v
 .lead { margin: var(--space-3) 0; }
 .sub { font-size: .95rem; margin: var(--space-4) 0 var(--space-2); }
 .dist { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
-.dist li { display: grid; grid-template-columns: 40px 1fr 52px; gap: 10px; align-items: center; }
+.dist li { display: grid; grid-template-columns: 40px 1fr 52px; gap: 10px; align-items: center; border-radius: 6px; padding: 1px 4px;
+           margin: 0 -4px; cursor: default; transition: opacity var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out); }
+.dist.pointing li:not(.on) { opacity: .45; }
+.dist li.on { background: var(--color-muted); }
+.dist li:focus-visible { outline-offset: 0; }
 .dist .track { height: 12px; background: var(--color-muted); border-radius: 4px; overflow: hidden; }
-.dist .track i { display: block; height: 100%; border-radius: 4px; background: color-mix(in srgb, var(--color-away) 55%, white); }
+.dist .track i { display: block; height: 100%; border-radius: 4px; background: color-mix(in srgb, var(--color-away) 55%, white);
+                 transform-origin: left center; transition: transform var(--dur-chart) var(--ease-out); }
+.pointed { min-height: 1.5em; margin: 4px 0 0; color: var(--color-heading); font-weight: 600; }
+.pointed.hint { color: var(--color-muted-foreground); font-weight: 400; }
+@media (hover: none) { .pointed.hint { visibility: hidden; } }
 .dist li.home .track i { background: color-mix(in srgb, var(--color-home) 50%, white); }
 .dist li.top .track i { background: var(--color-away); }
 .dist li.top.home .track i { background: var(--color-home); }

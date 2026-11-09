@@ -24,7 +24,7 @@ const label = computed(() => {
 </script>
 
 <template>
-  <RouterLink :to="live ? `/matches/${m.key}/live` : `/matches/${m.key}`" class="match-card" :class="{ post: m.league_code !== '201' }" :aria-label="label">
+  <RouterLink :to="live ? `/matches/${m.key}/live` : `/matches/${m.key}`" class="match-card lift" :class="{ post: m.league_code !== '201' }" :aria-label="label">
     <div class="meta">
       <span class="when"><svg v-if="favorite" class="star" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z" /></svg>{{ when }}</span>
       <span class="tags"><span>{{ GENDERS[m.gender] }}</span><span :class="{ stage: m.league_code !== '201' }">{{ stage }}</span></span>
@@ -58,7 +58,7 @@ const label = computed(() => {
 <style scoped>
 .match-card { display: block; padding: 10px 14px 12px; border: 1px solid var(--color-border); border-radius: var(--radius);
               background: var(--color-card); color: var(--color-foreground);
-              transition: border-color .15s var(--ease), box-shadow .15s var(--ease); }
+              transition: border-color .15s var(--ease), box-shadow .15s var(--ease), transform var(--dur-fast) var(--ease-out); }
 .match-card:hover { border-color: var(--color-primary); box-shadow: 0 2px 8px rgb(30 64 175 / .08); text-decoration: none; }
 .match-card.post { border-left: 3px solid var(--color-accent); }
 .meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: .78rem; color: var(--color-muted-foreground); margin-bottom: 6px; }

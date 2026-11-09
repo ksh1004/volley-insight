@@ -182,6 +182,7 @@ class NewsCollector(BaseCollector):
         self.naver_id = settings.NAVER_CLIENT_ID if naver_id is None else naver_id
         self.naver_secret = settings.NAVER_CLIENT_SECRET if naver_secret is None else naver_secret
         self.urls: list[str] = []  # URLs published by the latest run (the DAG checks they were indexed)
+        self.titles: dict[str, str] = {}  # url -> title: the enricher keeps one article per title, the DAG needs it
         self.failures: list[str] = []
 
     def describe(self, **params):
@@ -199,7 +200,7 @@ class NewsCollector(BaseCollector):
                     self.client.get(NAVER_URL, params=params, headers=headers).json(), q)
 
     def collect(self, **params):
-        self.urls, self.failures = [], []
+        self.urls, self.failures, self.titles = [], [], {}
         tried = 0
         seen = set()
         for feed, url, fetch in self.sources():
@@ -215,6 +216,7 @@ class NewsCollector(BaseCollector):
             for a in kept:
                 seen.add(a["url"])
                 self.urls.append(a["url"])
+                self.titles[a["url"]] = a["title"]
                 yield url, {"feed": feed}, a
         if tried and len(self.failures) == tried:
             raise RuntimeError(f"every news source failed: {self.failures}")

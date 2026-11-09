@@ -31,7 +31,12 @@ def _search(index, body):
 
     try:
         return client().search(index=index, **body)
-    except (ApiError, TransportError) as exc:
+    except TransportError as exc:
+        # A connection error can leave the cached client stuck (seen 2026-11-09: Django came up before
+        # Elasticsearch and every later search timed out until a restart). Drop it; the next request makes a new one.
+        client.cache_clear()
+        raise SearchUnavailable(str(exc)) from exc
+    except ApiError as exc:
         raise SearchUnavailable(str(exc)) from exc
 
 

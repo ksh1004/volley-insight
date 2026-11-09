@@ -1,7 +1,9 @@
 <script setup>
 // A game being followed live (or replayed) on the home page: sets, current set score, serve. Links to the live page.
+// Motion: the score digits roll when the home page refreshes them (every 20 s).
 import { computed } from 'vue'
 import { GENDERS, LIVE_MODES } from '@/constants/volley'
+import RollingNumber from '@/motion/RollingNumber.vue'
 
 const props = defineProps({ item: { type: Object, required: true } }) // { match, state } from /api/live
 const m = computed(() => props.item.match)
@@ -17,7 +19,7 @@ const label = computed(() => {
 </script>
 
 <template>
-  <RouterLink :to="`/matches/${m.key}/live`" class="live-card" :class="{ replay: s.mode === 'REPLAY' }" :aria-label="label">
+  <RouterLink :to="`/matches/${m.key}/live`" class="live-card lift" :class="{ replay: s.mode === 'REPLAY' }" :aria-label="label">
     <div class="meta small">
       <span class="mode" :class="s.mode === 'REPLAY' ? 'replay' : 'live'">
         <i v-if="s.mode === 'LIVE' && !finished" class="dot" aria-hidden="true" />{{ LIVE_MODES[s.mode] }}
@@ -26,16 +28,17 @@ const label = computed(() => {
     </div>
     <div class="row">
       <span class="team home"><i v-if="serving(s.home)" class="serve" title="서브" />{{ m.home.name }}</span>
-      <span class="sets"><b>{{ s.home_sets }}</b>:<b>{{ s.away_sets }}</b></span>
+      <span class="sets" aria-hidden="true"><b><RollingNumber :value="s.home_sets" /></b>:<b><RollingNumber :value="s.away_sets" /></b></span>
       <span class="team away">{{ m.away.name }}<i v-if="serving(s.away)" class="serve" title="서브" /></span>
     </div>
-    <div v-if="!finished" class="pts"><span class="h">{{ s.home_points }}</span> : <span class="a">{{ s.away_points }}</span></div>
+    <div v-if="!finished" class="pts" aria-hidden="true"><span class="h"><RollingNumber :value="s.home_points" /></span> : <span class="a"><RollingNumber :value="s.away_points" /></span></div>
   </RouterLink>
 </template>
 
 <style scoped>
 .live-card { display: block; padding: 10px 14px; border: 1px solid var(--color-accent); border-radius: var(--radius);
-             background: var(--color-card); color: var(--color-foreground); transition: box-shadow .15s var(--ease); }
+             background: var(--color-card); color: var(--color-foreground);
+             transition: box-shadow .15s var(--ease), transform var(--dur-fast) var(--ease-out); }
 .live-card.replay { border-color: var(--color-border); }
 .live-card:hover { text-decoration: none; box-shadow: 0 2px 8px rgb(30 64 175 / .1); }
 .meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }

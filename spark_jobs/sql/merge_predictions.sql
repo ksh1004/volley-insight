@@ -10,7 +10,8 @@ ON CONFLICT (name, version) DO UPDATE SET
   alias = 'champion', metrics = EXCLUDED.metrics, train_seasons = EXCLUDED.train_seasons,
   test_season = EXCLUDED.test_season, updated_at = now();
 
--- predictions only for matches that have not started; finished ones keep their pre-match prediction
+-- predictions only for matches that have not started and start within 7 days (design.md 1.8); finished ones keep
+-- their pre-match prediction. Further ahead the features (Elo, form) would be weeks stale by kick-off.
 INSERT INTO match_prediction (match_id, model_version_id, home_win_prob, set_score_probs, pred_home_sets, pred_away_sets,
                               predicted_at, is_correct)
 SELECT m.id, mv.id, p.home_win_prob, p.set_score_probs::jsonb, p.pred_home_sets, p.pred_away_sets, now(), NULL
@@ -19,7 +20,7 @@ JOIN season s ON s.code = p.season_code
 JOIN competition c ON c.season_id = s.id
 JOIN match m ON m.competition_id = c.id AND m.game_no = p.game_no
 JOIN model_version mv ON (mv.name, mv.version) = (SELECT name, version FROM staging.model_version)
-WHERE m.status = 'SCHEDULED' AND m.scheduled_at > now()
+WHERE m.status = 'SCHEDULED' AND m.scheduled_at > now() AND m.scheduled_at <= now() + interval '7 days'
 ON CONFLICT (match_id, model_version_id) DO UPDATE SET
   home_win_prob = EXCLUDED.home_win_prob, set_score_probs = EXCLUDED.set_score_probs,
   pred_home_sets = EXCLUDED.pred_home_sets, pred_away_sets = EXCLUDED.pred_away_sets,
@@ -29,6 +30,10 @@ ON CONFLICT (match_id, model_version_id) DO UPDATE SET
 DELETE FROM match_prediction mp USING match m, model_version mv
 WHERE m.id = mp.match_id AND mv.id = mp.model_version_id AND m.status = 'SCHEDULED' AND m.scheduled_at > now()
   AND (mv.name, mv.version) NOT IN (SELECT name, version FROM staging.model_version);
+
+-- beyond the 7-day horizon: no prediction yet (also clears ones made before the horizon existed, 2026-11-09)
+DELETE FROM match_prediction mp USING match m
+WHERE m.id = mp.match_id AND m.status = 'SCHEDULED' AND m.scheduled_at > now() + interval '7 days';
 
 -- results that came in since the last run (ANL-10)
 UPDATE match_prediction mp SET is_correct = ((mp.home_win_prob >= 0.5) = (m.home_sets > m.away_sets)), updated_at = now()

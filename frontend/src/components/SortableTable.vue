@@ -2,6 +2,8 @@
 // Data table whose columns sort on click or Enter/Space (headers are buttons; aria-sort reports the order).
 // columns: [{ key, label, left?, sticky?, strong?, sortable? (default true), get?(row) sort value, fmt?(row) display }]
 // A named slot `cell-<key>` (props: { row }) replaces a cell, e.g. to render a link.
+// Motion: after a re-sort the rows slide to their new places (Vue TransitionGroup moves them with transforms),
+// so the eye can follow where a player or team went.
 import { computed, ref } from 'vue'
 
 const props = defineProps({
@@ -53,18 +55,17 @@ const ariaSort = (col) => (sort.value.key === col.key ? (sort.value.dir === 'asc
           </th>
         </tr>
       </thead>
-      <tbody>
+      <TransitionGroup tag="tbody" name="row">
         <tr v-for="row in sorted" :key="rowKey(row)">
           <td v-for="col in columns" :key="col.key" :class="{ left: col.left, sticky: col.sticky, strong: col.strong }">
             <slot :name="`cell-${col.key}`" :row="row">{{ col.fmt ? col.fmt(row) : (valueOf(col, row) ?? '-') }}</slot>
           </td>
         </tr>
-      </tbody>
+      </TransitionGroup>
     </table>
   </div>
 </template>
 
 <style scoped>
 .arrow { display: inline-block; width: 1em; font-size: .65rem; margin-left: 2px; }
-.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 </style>

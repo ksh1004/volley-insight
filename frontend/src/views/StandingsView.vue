@@ -1,5 +1,6 @@
 <script setup>
 // WEB-05: team standings and player rankings by category.
+// Motion: switching the ranking category slides players who stay in the list to their new rank; new names fade in.
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { getPlayerRanking, getStandings } from '@/api/client'
@@ -58,14 +59,14 @@ watch(category, loadRanking)
     <div class="card-head">
       <h2>팀 순위 <span class="muted small">정규리그</span></h2>
     </div>
-    <AsyncState :loading="state.loading" :error="state.error" :empty="!standings?.rows.length">
-      <div class="table-wrap">
+    <AsyncState :loading="state.loading && !standings" :error="state.error" :empty="!standings?.rows.length">
+      <div class="table-wrap" :class="{ busy: state.loading }" :aria-busy="state.loading">
         <table class="data">
           <thead>
             <tr><th>순위</th><th class="left">팀</th><th>경기</th><th>승</th><th>패</th><th>승점</th>
               <th>세트 득실</th><th>세트 득실률</th><th>점수 득실률</th><th class="left">최근 5경기</th></tr>
           </thead>
-          <tbody>
+          <TransitionGroup tag="tbody" name="row">
             <tr v-for="r in standings.rows" :key="r.team.code" :class="zone[r.team.code]">
               <td class="rank">{{ r.rank }}<span v-if="zone[r.team.code]" class="sr-only">{{ zone[r.team.code] === 'po' ? ', 포스트시즌권' : ', 준플레이오프권' }}</span></td>
               <td class="left"><RouterLink :to="`/teams/${r.team.code}`">{{ r.team.name }}</RouterLink></td>
@@ -73,7 +74,7 @@ watch(category, loadRanking)
               <td>{{ r.sets_won }}:{{ r.sets_lost }}</td><td>{{ r.games ? ratio(r.set_ratio) : '-' }}</td><td>{{ r.games ? ratio(r.point_ratio) : '-' }}</td>
               <td class="left"><span class="form"><span v-for="(f, i) in r.form" :key="i" class="badge" :class="f.toLowerCase()">{{ f === 'W' ? '승' : '패' }}</span></span></td>
             </tr>
-          </tbody>
+          </TransitionGroup>
         </table>
       </div>
       <p class="legend small muted"><span class="key po" /> 포스트시즌권(1~3위) <span class="key semi" /> 준플레이오프권(4위가 3위와 승점 3점 이내)</p>
@@ -82,20 +83,21 @@ watch(category, loadRanking)
   </section>
 
   <section class="card">
-    <div class="card-head"><h2>선수 순위</h2></div>
-    <div class="tabs" role="group" aria-label="선수 순위 부문">
+    <div class="card-head"><h2>선수 순위</h2>
+      <RouterLink :to="{ path: '/ratings', query: { gender: filters.gender } }" class="small">포지션별 능력치 순위 →</RouterLink></div>
+    <div v-glider class="tabs" role="group" aria-label="선수 순위 부문">
       <button v-for="(label, c) in CATEGORIES" :key="c" type="button" class="tab" :aria-pressed="category === c" @click="category = c">{{ label }}</button>
     </div>
-    <AsyncState :loading="rankState.loading" :error="rankState.error" :empty="!ranking?.rows.length"
+    <AsyncState :loading="rankState.loading && !ranking" :error="rankState.error" :empty="!ranking?.rows.length"
                 empty-text="순위에 들 만큼 출전한 선수가 아직 없습니다.">
-      <div class="table-wrap">
+      <div class="table-wrap" :class="{ busy: rankState.loading }" :aria-busy="rankState.loading">
         <table class="data">
           <thead>
             <tr><th>순위</th><th class="left">선수</th><th class="left">팀</th><th>경기</th><th>출전 세트</th>
               <th>{{ ranking.label }}</th>
               <th v-if="category === 'attack'">성공/시도</th><th v-if="category === 'receive'">시도</th></tr>
           </thead>
-          <tbody>
+          <TransitionGroup tag="tbody" name="row">
             <tr v-for="r in ranking.rows" :key="r.player.code">
               <td>{{ r.rank }}</td>
               <td class="left"><RouterLink :to="`/players/${r.player.code}`">{{ r.player.name }}</RouterLink></td>
@@ -104,7 +106,7 @@ watch(category, loadRanking)
               <td v-if="category === 'attack'">{{ r.attack_success }}/{{ r.attack_attempts }}</td>
               <td v-if="category === 'receive'">{{ r.receive_attempts }}</td>
             </tr>
-          </tbody>
+          </TransitionGroup>
         </table>
       </div>
       <p class="small muted">순위 자격: {{ ranking.qualification }}</p>
@@ -114,6 +116,7 @@ watch(category, loadRanking)
 
 <style scoped>
 .form { display: inline-flex; gap: 3px; }
+.busy { opacity: .55; transition: opacity var(--dur-fast) linear; }
 .rank { font-weight: 700; border-left: 3px solid transparent; }
 tr.po .rank { border-left-color: var(--color-primary); }
 tr.semi .rank { border-left-color: var(--color-accent); }
@@ -121,5 +124,4 @@ tr.semi .rank { border-left-color: var(--color-accent); }
 .key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
 .key.po { background: var(--color-primary); }
 .key.semi { background: var(--color-accent); margin-left: 8px; }
-.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 </style>

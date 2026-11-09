@@ -57,3 +57,18 @@ class ArticleApiTest(TestCase):
         with mock.patch.object(search, "suggest", side_effect=search.SearchUnavailable("down")):
             assert self.client.get("/api/search/suggest?q=김").status_code == 503
             assert self.client.get("/api/search?q=김").status_code == 503
+
+    def test_client_stuck_after_a_connection_error_is_replaced(self):
+        from elastic_transport import ConnectionError as Down
+
+        search.client.cache_clear()
+        broken, fresh = mock.Mock(), mock.Mock()
+        broken.search.side_effect = Down("timed out")
+        fresh.search.return_value = {"hits": {"hits": []}}
+        try:
+            with mock.patch("elasticsearch.Elasticsearch", side_effect=[broken, fresh]):
+                with self.assertRaises(search.SearchUnavailable):
+                    search.suggest("김")
+                assert search.suggest("김") == []  # a new client, not the broken one
+        finally:
+            search.client.cache_clear()

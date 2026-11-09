@@ -8,6 +8,7 @@ import MatchPreview from '@/components/MatchPreview.vue'
 import ScoreFlow from '@/components/ScoreFlow.vue'
 import SortableTable from '@/components/SortableTable.vue'
 import { ACTIONS, GENDERS, NON_PLAY, POSITIONS, RESULTS, STATUS } from '@/constants/volley'
+import RollingNumber from '@/motion/RollingNumber.vue'
 import { fmtFullDate, fmtTime, num, pct } from '@/utils/format'
 
 const props = defineProps({ matchKey: { type: String, required: true } })
@@ -126,7 +127,7 @@ watch(setNo, loadRallies)
             <span class="side muted small">홈</span>{{ match.home.name }}
           </RouterLink>
           <div class="board-score" v-if="done">
-            <b :class="{ won: won('home') }">{{ match.home_sets }}</b><span>:</span><b :class="{ won: won('away') }">{{ match.away_sets }}</b>
+            <b :class="{ won: won('home') }"><RollingNumber :value="match.home_sets" roll-in /></b><span>:</span><b :class="{ won: won('away') }"><RollingNumber :value="match.away_sets" roll-in /></b>
           </div>
           <div class="board-score status" v-else>{{ STATUS[match.status] }}</div>
           <RouterLink :to="`/teams/${match.away.code}`" class="board-team" :class="{ won: won('away') }">
@@ -171,16 +172,16 @@ watch(setNo, loadRallies)
       <MatchPreview v-if="!done || match.preview?.prediction" :match="match" />
 
       <template v-if="done">
-        <section class="card" v-if="compareRows.length">
+        <section v-reveal class="card" v-if="compareRows.length">
           <h2>팀 기록 비교</h2>
           <CompareBars :rows="compareRows" :a-label="match.home.name" :b-label="match.away.name" />
         </section>
         <p v-else class="card empty">선수·팀 기록이 아직 수집되지 않았습니다.</p>
 
-        <section class="card" v-if="match.players.home.length || match.players.away.length">
+        <section v-reveal class="card" v-if="match.players.home.length || match.players.away.length">
           <div class="card-head">
             <h2>선수 기록</h2>
-            <div class="tabs" role="group" aria-label="팀 선택">
+            <div v-glider class="tabs" role="group" aria-label="팀 선택">
               <button v-for="s in ['home', 'away']" :key="s" type="button" class="tab" :aria-pressed="side === s" @click="side = s">{{ match[s].name }}</button>
             </div>
           </div>
@@ -193,10 +194,10 @@ watch(setNo, loadRallies)
           </SortableTable>
         </section>
 
-        <section class="card">
+        <section v-reveal class="card">
           <div class="card-head">
             <h2>세트별 흐름</h2>
-            <div class="tabs" role="group" aria-label="세트 선택">
+            <div v-glider class="tabs" role="group" aria-label="세트 선택">
               <button v-for="s in match.set_details" :key="s.set_no" type="button" class="tab" :aria-pressed="setNo === s.set_no"
                       @click="setNo = s.set_no">{{ s.set_no }}세트 <span class="set-score">{{ s.home_points }}:{{ s.away_points }}</span></button>
             </div>
@@ -206,7 +207,7 @@ watch(setNo, loadRallies)
           </p>
           <AsyncState v-else :loading="rallyState.loading" :error="rallyState.error">
             <template v-if="rallies">
-              <ScoreFlow :events="rallies.events" :home="match.home.name" :away="match.away.name" />
+              <ScoreFlow :key="setNo" :events="rallies.events" :home="match.home.name" :away="match.away.name" />
               <details class="pbp">
                 <summary>문자중계 보기 ({{ groups.filter((g) => g.scorer).length }}랠리)</summary>
                 <ol class="rallies">

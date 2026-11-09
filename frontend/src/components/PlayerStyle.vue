@@ -2,7 +2,9 @@
 // Player type (K-means group) and similar players (ANL-06, WEB-07).
 // The player's most distinctive features are bars from the centre (= average of the same gender), with the
 // sign and words written out so the meaning never depends on colour alone.
+// Motion: the bars grow out of the centre line when first seen; switching "같은 시즌 / 역대" slides the new list in.
 import { computed, ref } from 'vue'
+import { useInView } from '@/motion/core'
 
 const props = defineProps({
   style: { type: Object, required: true }, // /api/players/{code} `style`
@@ -22,7 +24,9 @@ const fmt = (f, v) => (RATES.has(f) ? `${(v * 100).toFixed(1)}%` : v.toFixed(2))
 const standout = computed(() => Object.entries(props.style.z)
   .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 6)
   .map(([f, z]) => ({ f, z, label: FEATURE_LABELS[f] || f, value: fmt(f, props.style.features[f]), better: f === 'error_ps' ? z < 0 : z > 0 })))
-const width = (z) => `${Math.min(50, (Math.abs(z) / 3) * 50)}%`
+const barsEl = ref(null)
+const seen = useInView(barsEl)
+const grow = (z) => (seen.value ? Math.min(1, Math.abs(z) / 3) : 0)
 const words = (z) => (Math.abs(z) < 0.5 ? '평균 수준' : z > 0 ? (z > 1.5 ? '매우 높음' : '높음') : (z < -1.5 ? '매우 낮음' : '낮음'))
 
 const scope = ref('season')
@@ -46,30 +50,31 @@ const list = computed(() => (scope.value === 'season' ? props.style.similar_seas
     <p v-if="style.provisional" class="note small">이번 시즌 {{ style.sets }}세트만 뛰어서 유형이 바뀔 수 있습니다.</p>
 
     <h3 class="sub">두드러진 기록 <span class="muted small">같은 성별 선수 평균과 비교</span></h3>
-    <ul class="bars">
-      <li v-for="s in standout" :key="s.f">
+    <ul ref="barsEl" class="bars">
+      <li v-for="(s, i) in standout" :key="s.f">
         <span class="name small">{{ s.label }}</span>
         <span class="val small">{{ s.value }}</span>
-        <span class="track" aria-hidden="true"><i :class="s.z > 0 ? 'pos' : 'neg'" :style="{ width: width(s.z) }" /></span>
+        <span class="track" aria-hidden="true"><i :class="s.z > 0 ? 'pos' : 'neg'"
+          :style="{ transform: `scaleX(${grow(s.z)})`, transitionDelay: `${i * 60}ms` }" /></span>
         <span class="word small" :class="{ good: s.better && Math.abs(s.z) >= 0.5 }">{{ words(s.z) }}</span>
       </li>
     </ul>
 
     <div class="sim-head">
       <h3 class="sub">비슷한 선수</h3>
-      <div class="tabs" role="group" aria-label="비교 범위">
+      <div v-glider class="tabs" role="group" aria-label="비교 범위">
         <button type="button" class="tab" :aria-pressed="scope === 'season'" @click="scope = 'season'">같은 시즌</button>
         <button type="button" class="tab" :aria-pressed="scope === 'all'" @click="scope = 'all'">역대</button>
       </div>
     </div>
-    <ol v-if="list.length" class="sim">
-      <li v-for="r in list" :key="`${r.player.code}-${r.season.code}`">
+    <TransitionGroup v-if="list.length" tag="ol" name="item" class="sim">
+      <li v-for="(r, i) in list" :key="`${scope}-${r.player.code}-${r.season.code}`" :style="{ transitionDelay: `${i * 40}ms` }">
         <RouterLink :to="`/players/${r.player.code}?season=${r.season.code}`" class="who">{{ r.player.name }}</RouterLink>
         <span class="muted small">{{ r.team.name }}<template v-if="scope === 'all'"> · {{ r.season.years.replace('-', '–') }}</template></span>
         <span class="small tlabel">{{ r.type }}</span>
         <span class="score small" :aria-label="`유사도 ${r.similarity}`">유사도 <b>{{ r.similarity }}</b></span>
       </li>
-    </ol>
+    </TransitionGroup>
     <p v-else class="empty small">비교할 선수가 없습니다.</p>
     <p class="muted small foot">유사도 100은 모든 선수 쌍 가운데 가장 가까운 수준이라는 뜻입니다. 세트당 기록·공격 유형·성공률 13가지로 계산합니다.</p>
   </div>
@@ -89,9 +94,9 @@ const list = computed(() => (scope.value === 'season' ? props.style.similar_seas
            border-bottom: 1px solid var(--color-border-soft); }
 .val { font-variant-numeric: tabular-nums; text-align: right; font-weight: 600; }
 .track { position: relative; height: 10px; background: linear-gradient(var(--color-border), var(--color-border)) center / 1px 100% no-repeat; }
-.track i { position: absolute; top: 1px; height: 8px; border-radius: 4px; }
-.track i.pos { left: 50%; background: var(--color-primary); }
-.track i.neg { right: 50%; background: var(--color-muted-foreground); }
+.track i { position: absolute; top: 1px; height: 8px; width: 50%; border-radius: 4px; transition: transform var(--dur-chart) var(--ease-out); }
+.track i.pos { left: 50%; background: var(--color-primary); transform-origin: left center; }
+.track i.neg { right: 50%; background: var(--color-muted-foreground); transform-origin: right center; }
 .word { color: var(--color-muted-foreground); }
 .word.good { color: var(--color-good); font-weight: 600; }
 .sim-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }

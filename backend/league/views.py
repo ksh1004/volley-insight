@@ -129,6 +129,7 @@ class TeamDetailView(APIView):
         matches = base_matches().filter(Q(home_team=team) | Q(away_team=team), competition__season=season)
         recent = matches.filter(status__in=q.FINISHED).order_by("-scheduled_at")[:5]
         upcoming = matches.filter(status=Match.Status.SCHEDULED, scheduled_at__gte=timezone.now()).order_by("scheduled_at")[:3]
+        history = aq.rating_history(team, season)
         return Response({
             "team": {"code": team.code, "name": team.name, "full_name": team.full_name, "gender": team.gender,
                      "home_arena": team.home_arena, "home_city": team.home_city, "is_active": team.is_active},
@@ -136,7 +137,9 @@ class TeamDetailView(APIView):
             "record": record, "stats": stats,
             "profile": aq.team_profile(team, season, totals),
             "form": team_form(team, season),
-            "rating": {"history": aq.rating_history(team, season),
+            "rating": {"history": history,
+                       # early in a season the chart also shows the end of the season before, faded
+                       "previous": aq.rating_tail(team, season) if len(history) < 10 else None,
                        "league": aq.current_ratings(team.gender, season)},
             "roster": [{"player": {"code": r["code"], "name": r["name"]}, "position": positions.get(r["code"], ""),
                         "back_number": numbers.get(r["code"]), "games": r["games"], "sets_played": r["sets_played"],
@@ -191,6 +194,7 @@ class PlayerDetailView(APIView):
             "season": season_ref(season), "seasons": season_codes,
             "career": career, "matches": log, "profile": aq.player_percentiles(player, season),
             "style": aq.player_style(player, season),
+            "ratings": aq.player_ratings(player),
             "form": player_form([{"match": r["match"], "date": r["date"], "sets": r["sets_played"], "points": r["points"],
                                   **{f: r[f] for f in q.BOX_FIELDS}} for r in log if r["result"]]),
             "source": SOURCE,

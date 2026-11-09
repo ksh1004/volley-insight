@@ -73,6 +73,10 @@ def kovo_daily():
     def player_types():
         p.run_player_types()
 
+    @task
+    def player_ratings():
+        p.run_player_ratings()
+
     @task(retries=0)
     def quality_gate():
         now = p.now_kst()
@@ -98,7 +102,7 @@ def kovo_daily():
     wait_for_raw(result) >> curated >> marts >> report(result)
     curated >> quality_gate()
     marts >> index_entities()
-    marts >> player_types()
+    marts >> player_types() >> player_ratings()  # one after the other: each Spark driver needs memory here
 
 
 kovo_daily()

@@ -47,7 +47,7 @@ const byGender = computed(() => ['M', 'F'].map((g) => ({ g, teams: teams.value.f
 <template>
   <h1>배구 기사</h1>
   <section class="card">
-    <div class="filters" role="group" aria-label="팀으로 거르기">
+    <div v-glider class="filters" role="group" aria-label="팀으로 거르기">
       <button type="button" class="tab" :aria-pressed="!team" @click="pick('')">전체</button>
       <template v-for="grp in byGender" :key="grp.g">
         <span class="group muted small">{{ GENDERS[grp.g] }}</span>
