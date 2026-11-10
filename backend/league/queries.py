@@ -1,4 +1,4 @@
-"""Database reads shared by the league and matches APIs."""
+"""리그·경기 API가 함께 쓰는 DB 조회 함수들(시즌 고르기, 파라미터 검사, 시즌 합계, 비율 지표)."""
 from django.db.models import Count, F, Q, Sum, Value
 from django.db.models.functions import Length, Replace
 from rest_framework.exceptions import NotFound, ValidationError
@@ -7,18 +7,19 @@ from matches.models import Match, PlayerMatchStat, TeamMatchStat
 
 from .models import Season
 
-FINISHED = [Match.Status.FINISHED, Match.Status.CONFIRMED]
-REGULAR = "201"
+FINISHED = [Match.Status.FINISHED, Match.Status.CONFIRMED]  # 결과가 있는 경기
+REGULAR = "201"  # 정규리그 리그 코드
+# 박스스코어에서 합산하는 항목들
 BOX_FIELDS = ["attack_attempts", "attack_success", "attack_blocked", "attack_errors", "serve_attempts", "serve_aces",
               "serve_errors", "block_attempts", "block_success", "block_effective", "block_assist", "receive_attempts",
               "receive_excellent", "receive_errors", "dig_attempts", "dig_success", "set_attempts", "set_success",
               "errors", "warnings"]
-# number of "1"s in played_sets ("11100" -> 3)
+# played_sets의 '1' 개수 = 출전 세트 수("11100" → 3). DB 안에서 계산하는 식(전체 길이 - '1'을 지운 길이)
 SETS_PLAYED = Length("played_sets") - Length(Replace("played_sets", Value("1"), Value("")))
 
 
 def resolve_season(code: str | None) -> Season:
-    """The requested season, or the latest season that has matches."""
+    """요청한 시즌(코드), 없으면 경기가 있는 가장 최근 시즌. 찾지 못하면 404."""
     if code:
         season = Season.objects.filter(code=code).first()
         if not season:
@@ -31,6 +32,7 @@ def resolve_season(code: str | None) -> Season:
 
 
 def gender_param(value: str | None, required=False):
+    """성별 쿼리 파라미터 검사: "M"/"F"만 허용(아니면 400). 필수가 아니고 비어 있으면 None(= 남녀 모두)."""
     if value in (None, "") and not required:
         return None
     if value not in ("M", "F"):
@@ -39,12 +41,14 @@ def gender_param(value: str | None, required=False):
 
 
 def competition_matches(season, gender, league=REGULAR):
+    """시즌·리그(·성별)의 경기 쿼리셋."""
     qs = Match.objects.filter(competition__season=season, competition__league_code=league)
     return qs.filter(gender=gender) if gender else qs
 
 
 def standings_input(season, gender, league=REGULAR):
-    """(teams, finished match rows) for league.standings.team_standings."""
+    """league.standings.team_standings에 넘길 (팀 목록, 끝난 경기 행들). 아직 경기가 없는 팀도 순위표에 나오게
+    팀 목록은 예정 경기까지 포함해 모은다. 경기 행에는 세트 점수를 더한 총 득점(home/away_points)을 붙인다."""
     matches = competition_matches(season, gender, league).select_related("home_team", "away_team")
     teams = {}
     for m in matches:
@@ -58,6 +62,7 @@ def standings_input(season, gender, league=REGULAR):
 
 
 def team_sets_played(season, gender, league=REGULAR) -> dict:
+    """팀 코드 → 그 팀이 치른 세트 수(순위 자격 '팀 세트의 1/3' 계산용)."""
     out = {}
     for m in competition_matches(season, gender, league).filter(status__in=FINISHED).values(
             "home_sets", "away_sets", home=F("home_team__code"), away=F("away_team__code")):
@@ -68,7 +73,7 @@ def team_sets_played(season, gender, league=REGULAR) -> dict:
 
 
 def player_totals(season, gender, league=REGULAR, **filters):
-    """Season totals per (player, team) for finished matches."""
+    """끝난 경기의 (선수, 팀)별 시즌 합계. games는 실제로 한 세트라도 뛴 경기 수("00000" 제외)."""
     qs = PlayerMatchStat.objects.filter(match__competition__season=season, match__competition__league_code=league,
                                         match__status__in=FINISHED, **filters)
     if gender:
@@ -80,7 +85,7 @@ def player_totals(season, gender, league=REGULAR, **filters):
 
 
 def team_totals(season, gender, league=REGULAR):
-    """Season totals per team (box score sums + sets played) for finished matches."""
+    """끝난 경기의 팀별 시즌 합계(박스스코어 합 + 치른 세트 수)."""
     rows = (TeamMatchStat.objects.filter(match__competition__season=season, match__competition__league_code=league,
                                          match__gender=gender, match__status__in=FINISHED)
             .values(code=F("team__code"), name=F("team__name"))
@@ -91,7 +96,8 @@ def team_totals(season, gender, league=REGULAR):
 
 
 def rates(t: dict) -> dict:
-    """Comparable per-set and percentage indicators from box-score totals."""
+    """박스스코어 합계로 비교 가능한 지표(세트당 수치, 백분율)를 만든다. 분모가 0이면 None.
+    공격 효율 = (성공 - 막힘 - 범실) / 시도, 리시브 효율 = (정확 - 실패) / 시도."""
     s = t.get("sets_played") or 0
 
     def pct(a, b):

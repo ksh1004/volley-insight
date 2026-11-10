@@ -1,7 +1,7 @@
 <script setup>
-// WEB-01: today's games (or the next ones), latest results, standings of both divisions, latest articles.
-// WEB-12: signed-in viewers see their favourite teams and players first, and their teams' games lead the lists.
-// Motion: sections and cards rise in as they scroll into view (v-reveal, staggered within a grid).
+// WEB-01 홈 화면: 진행 중 경기, 오늘 경기(없으면 다가오는 경기), 최근 결과, 남녀부 순위, 최신 기사.
+// WEB-12: 로그인한 사람에게는 관심 팀·선수 블록이 맨 위에 나오고, 관심 팀 경기가 목록 앞에 온다.
+// 모션: 섹션과 카드가 화면에 들어올 때 떠오르며 나타난다(v-reveal, 격자 안에서는 순서대로 시차).
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { getArticles, getLive, getMatches, getStandings } from '@/api/client'
 import ArticleList from '@/components/ArticleList.vue'
@@ -18,7 +18,7 @@ const filters = useFiltersStore()
 const auth = useAuthStore()
 const favTeams = computed(() => new Set(auth.favorites.teams.map((t) => t.code)))
 const isFav = (m) => favTeams.value.has(m.home.code) || favTeams.value.has(m.away.code)
-// favourite teams' games first, otherwise the server order (time) is kept
+// 관심 팀 경기를 앞으로, 나머지는 서버가 준 순서(시각순) 그대로(sort는 같은 값끼리 순서를 유지)
 const favFirst = (list) => [...list].sort((a, b) => isFav(b) - isFav(a))
 const state = ref({ loading: true, error: null })
 const today = ref([])
@@ -28,19 +28,19 @@ const standings = ref({})
 const latestSeason = ref(null)
 const articles = ref({ loading: true, items: [], error: null })
 
-// games followed live (or replayed) right now; refreshed every 20 s, each card links to the live page
+// 지금 실시간(또는 재생) 중인 경기들. 20초마다 새로 받아 오고, 카드는 실시간 화면으로 연결된다
 const live = ref([])
 let liveTimer = null
 async function loadLive() {
   try {
     live.value = (await getLive()).results
   } catch {
-    /* the rest of the page does not depend on it */
+    /* 실패해도 화면의 나머지는 이것과 상관없다 */
   }
 }
 onBeforeUnmount(() => clearInterval(liveTimer))
 
-// articles load on their own so a slow search side never holds up the match cards
+// 기사는 따로 불러온다: 기사 쪽이 느려도 경기 카드가 늦게 뜨지 않게
 async function loadArticles() {
   try {
     articles.value.items = (await getArticles({ page_size: 6 })).results
@@ -51,6 +51,7 @@ async function loadArticles() {
   }
 }
 
+// 화면이 뜨면: 기사·실시간은 따로, 오늘 경기와 최근 결과는 함께, 그다음 순위표(남녀부 동시에)
 onMounted(async () => {
   loadArticles()
   loadLive()

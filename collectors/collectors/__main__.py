@@ -1,16 +1,19 @@
-"""Command line entry point.
+"""수집기 명령줄 진입점. `python -m collectors <명령>`으로 실행한다.
 
-  python -m collectors probe                         # one season-list request, prints the structure
-  python -m collectors seasons [--gcode 001]         # publish season list to Kafka
-  python -m collectors schedule --season 023 [--league 201] [--gender 1] [--dry-run]
+  python -m collectors probe                         # 시즌 목록을 한 번 요청해 응답 구조를 출력
+  python -m collectors seasons [--gcode 001]         # 시즌 목록을 Kafka로 발행
+  python -m collectors schedule --season 023 [--league 201] [--gender 1] [--dry-run]   # 한 시즌 일정 발행
   python -m collectors games --season 022 [--league 203] [--gnum 3] [--limit 5] [--only match|rally]
-  python -m collectors probe --path /stat/real-time -p season=022 -p gnum=3 ...   # one request -> samples/
-  python -m collectors news [--dry-run]              # volleyball articles from RSS (+ Naver API if a key is set)
-  python -m collectors kafka-lag [--every 30] [--once]   # consumer lag of every group -> Elasticsearch
-  python -m collectors live [--every 15]             # today's games, new play-by-play events -> kovo.live
-  python -m collectors replay 023-5 [--speed 10] [--from-set 1]   # a finished game -> kovo.live (PIPE-11)
+                                                     # 끝난 경기의 박스스코어·문자중계 발행
+  python -m collectors probe --path /stat/real-time -p season=022 -p gnum=3 ...   # 요청 한 번 → samples/에 저장
+  python -m collectors news [--dry-run]              # RSS(+ 키가 있으면 네이버 API)의 배구 기사
+  python -m collectors kafka-lag [--every 30] [--once]   # 모든 컨슈머 그룹의 지연 → Elasticsearch
+  python -m collectors live [--every 15]             # 오늘 경기의 새 문자중계 이벤트 → kovo.live (계속 실행)
+  python -m collectors replay 023-5 [--speed 10] [--from-set 1]   # 끝난 경기를 실시간처럼 → kovo.live (PIPE-11)
 
-Under Git Bash, set MSYS_NO_PATHCONV=1 so `--path /stat/...` is not rewritten into a Windows path.
+--dry-run: Kafka로 보내지 않고 무엇을 보낼지 로그만 찍는다.
+Git Bash에서는 MSYS_NO_PATHCONV=1을 붙여야 `--path /stat/...`이 Windows 경로로 바뀌지 않는다.
+보통은 Airflow DAG(airflow/dags)가 이 패키지의 수집기 클래스를 직접 불러 쓰고, 이 명령줄은 수동 실행·점검용이다.
 """
 import argparse
 import json
@@ -24,11 +27,12 @@ from .kovo_collectors import (MatchCollector, RallyCollector, ScheduleCollector,
 from .news import NewsCollector, NewsHttp
 from .publisher import DryRunPublisher, KafkaPublisher
 
-SAMPLES = Path(__file__).resolve().parent.parent / "samples"
+SAMPLES = Path(__file__).resolve().parent.parent / "samples"  # probe가 응답 예시를 저장하는 폴더
 
 
 def shape(value, depth=0, max_depth=3):
-    """Short description of a JSON value's structure (keys and types, first list item only)."""
+    """JSON 값의 구조를 짧게 요약한다(키와 자료형만, 목록은 첫 항목만, max_depth 단계까지).
+    새 API의 응답 모양을 빠르게 파악할 때 쓴다."""
     if depth >= max_depth:
         return type(value).__name__
     if isinstance(value, dict):
@@ -39,7 +43,7 @@ def shape(value, depth=0, max_depth=3):
 
 
 def cmd_probe(args):
-    """One request, saved to samples/ so its structure can be checked before writing a collector."""
+    """요청 한 번의 응답을 samples/에 저장하고 구조를 출력한다. 수집기를 만들기 전에 응답 모양을 확인하는 용도."""
     if args.path:
         params = dict(p.split("=", 1) for p in args.param)
         body = KovoClient().get(args.path, params)
@@ -55,15 +59,18 @@ def cmd_probe(args):
 
 
 def make_publisher(args):
+    """--dry-run이면 로그만 찍는 발행기, 아니면 실제 Kafka 발행기."""
     return DryRunPublisher() if args.dry_run else KafkaPublisher()
 
 
 def cmd_seasons(args):
+    """seasons 명령: 시즌 목록을 발행한다."""
     n = SeasonCollector(KovoClient(), make_publisher(args)).run(gcode=args.gcode)
     print(f"published {n} message(s)")
 
 
 def cmd_schedule(args):
+    """schedule 명령: 한 시즌 일정을 발행한다. --dry-run --save-sample이면 첫 응답을 samples/에 저장."""
     publisher = make_publisher(args)
     n = ScheduleCollector(KovoClient(), publisher).run(
         season_code=args.season, gcode=args.gcode,
@@ -81,7 +88,9 @@ def cmd_schedule(args):
 
 
 def cmd_games(args):
-    client = KovoClient()  # one client, so one rate limiter for every request below
+    """games 명령: 끝난 경기를 골라 박스스코어(kovo.match)와 문자중계(kovo.rally)를 발행한다.
+    시작 전에 KOVO 요청 수와 예상 시간(1초 1회 기준)을 알려 준다."""
+    client = KovoClient()  # 클라이언트를 하나만 써서 아래 모든 요청이 같은 간격 제한을 공유한다
     games = finished_games(client, args.season, args.gcode,
                            leagues=[args.league] if args.league else None,
                            genders=[args.gender] if args.gender else ("1", "2"))
@@ -93,6 +102,7 @@ def cmd_games(args):
     if not games:
         print("no finished games to collect")
         return
+    # 요청 수 = 경기당 상세 1번(match) + 세트당 문자중계 1번(rally)
     requests = len(games) * (0 if args.only == "rally" else 1) + \
         sum(g.sets for g in games) * (0 if args.only == "match" else 1)
     print(f"{len(games)} finished game(s), about {requests} KOVO requests (~{requests // 60 + 1} min at 1 req/s)")
@@ -104,6 +114,7 @@ def cmd_games(args):
 
 
 def cmd_news(args):
+    """news 명령: 배구 기사 메타데이터를 발행한다. --dry-run이면 모은 기사 제목을 출력."""
     publisher = make_publisher(args)
     collector = NewsCollector(NewsHttp(), publisher)
     n = collector.run()
@@ -116,18 +127,21 @@ def cmd_news(args):
 
 
 def cmd_kafka_lag(args):
+    """kafka-lag 명령: 컨슈머 그룹 지연을 Elasticsearch에 기록한다(계속 실행, --once면 한 번)."""
     from .kafka_lag import run
 
     run(every=args.every, once=args.once)
 
 
 def cmd_live(args):
+    """live 명령: 실시간 수집기를 끝없이 돌린다(compose의 live-collector 서비스가 실행)."""
     from .live import LiveCollector
 
     LiveCollector(KovoClient(), KafkaPublisher()).run(every=args.every)
 
 
 def cmd_replay(args):
+    """replay 명령: 끝난 경기를 실시간처럼 다시 보낸다."""
     from .replay import MatchReplayer
 
     n = MatchReplayer(KafkaPublisher()).replay(args.match, speed=args.speed, from_set=args.from_set)
@@ -135,6 +149,7 @@ def cmd_replay(args):
 
 
 def main(argv=None):
+    """명령줄 인자를 읽어 해당 cmd_* 함수를 실행한다. 명령마다 하위 파서(subparser)를 하나씩 만든다."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     p = argparse.ArgumentParser(prog="collectors")
     sub = p.add_subparsers(dest="cmd", required=True)

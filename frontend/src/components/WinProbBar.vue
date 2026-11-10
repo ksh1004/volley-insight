@@ -1,8 +1,8 @@
 <script setup>
-// Win probability as a 100% stacked bar with both percentages written out
-// (ui-ux-pro-max chart guidance: part-to-whole with close values -> stacked bar + direct labels, not colour alone).
-// Motion: the bar grows in from the middle the first time it is seen; during a live game the split slides and
-// the percentages glide to each new value (transform only, no layout change).
+// 승리 확률을 100% 누적 막대로, 양쪽 퍼센트를 글자로 함께 적어 보여 준다
+// (ui-ux-pro-max 차트 지침: 비슷한 값의 부분-전체 비교 → 누적 막대 + 직접 표기, 색만으로 전하지 않음).
+// 모션: 처음 보일 때 가운데에서 양쪽으로 열리고, 실시간 경기 중에는 나뉜 지점이 미끄러지며 퍼센트도 새 값으로
+// 따라간다(transform만 사용, 레이아웃 변화 없음).
 import { computed, ref } from 'vue'
 import AnimatedNumber from '@/motion/AnimatedNumber.vue'
 import { useInView } from '@/motion/core'
@@ -10,18 +10,19 @@ import { useInView } from '@/motion/core'
 const props = defineProps({
   home: { type: String, required: true },
   away: { type: String, required: true },
-  prob: { type: Number, required: true }, // home win probability 0..1
-  compact: Boolean, // small version inside match cards
-  label: { type: String, default: '예측 승리 확률' }, // spoken name (e.g. live win probability)
+  prob: { type: Number, required: true }, // 홈 승리 확률 0~1
+  compact: Boolean, // 경기 카드 안에 넣는 작은 버전
+  label: { type: String, default: '예측 승리 확률' }, // 화면 낭독기가 읽는 이름(예: 실시간 승리 확률)
 })
 const h = computed(() => Math.round(props.prob * 100))
 const a = computed(() => 100 - h.value)
+// 우세한 쪽('home' | 'away', 같으면 null): 그쪽 숫자를 강조
 const favourite = computed(() => (h.value === a.value ? null : h.value > a.value ? 'home' : 'away'))
 const pctText = (v) => `${Math.round(v)}%`
 
 const el = ref(null)
 const seen = useInView(el)
-// before it is seen both sides sit at the middle line, then they open to the real split
+// 보이기 전에는 양쪽이 가운데 선에 붙어 있다가, 보이면 실제 비율로 열린다
 const split = computed(() => (seen.value ? props.prob : 0.5))
 </script>
 

@@ -1,11 +1,13 @@
-"""Shared steps of the KOVO DAGs (design.md 1.8): collect -> wait until archived in HDFS -> curate with Spark.
+"""KOVO DAG들이 함께 쓰는 단계들(설계서 1.8): 수집 → HDFS에 보관될 때까지 대기 → Spark로 정제.
 
-Kept free of Airflow imports so the logic can be unit tested (airflow/tests). DAG files wrap these in tasks.
+Airflow를 import 하지 않게 만들어 두어 로직을 단위 테스트할 수 있다(airflow/tests). DAG 파일은 이 함수들을
+@task로 감싸기만 한다.
 
-  collect_*      run the collectors (Kafka) and return a "batch" per collector run: topic, run_id, count, time
-  raw_arrived    True once every message of those batches is in a finished file under HDFS /raw/
-  run_curation   spark-submit spark_jobs/curate_kovo.py on YARN for the given seasons
-  collect_news / articles_stored   news_collect DAG: publish articles, then check Flink stored them
+  collect_*        수집기를 실행(Kafka로 발행)하고, 실행마다 '배치'를 돌려준다: 토픽, run_id, 메시지 수, 시각
+  raw_arrived      그 배치들의 메시지가 모두 HDFS /raw/ 아래 마감된 파일에 들어가면 True
+  run_curation     spark_jobs/curate_kovo.py를 YARN에 제출(주어진 시즌들)
+  collect_news / articles_stored   news_collect DAG: 기사 발행, 그리고 Flink가 저장했는지 확인
+  그 밖에: 대상 경기 고르기, DB 조회(확정 경기, 지켜볼 경기, 품질 관문), 실시간 재생, Spark 작업 제출
 """
 import logging
 import os
@@ -14,11 +16,11 @@ from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
 
-KST = ZoneInfo("Asia/Seoul")
+KST = ZoneInfo("Asia/Seoul")  # 경기 날짜·시각은 모두 한국 시간 기준
 WEBHDFS = os.environ.get("WEBHDFS_URL", "http://namenode:9870/webhdfs/v1")
 ELASTICSEARCH = os.environ.get("ELASTICSEARCH_URL", "http://elasticsearch:9200").rstrip("/")
 SPARK_JOBS = os.environ.get("SPARK_JOBS_DIR", "/opt/airflow/spark_jobs")
-# Same settings as spark_jobs/submit.sh
+# Spark 제출 설정: spark_jobs/submit.sh와 같은 값이어야 손으로 돌린 결과와 DAG 결과가 같다
 SPARK_CONF = {
     "spark.driver.host": "airflow",
     "spark.driver.bindAddress": "0.0.0.0",
@@ -34,20 +36,21 @@ SPARK_CONF = {
 SPARK_JARS = "/opt/spark-jars/postgresql.jar,/opt/spark-jars/elasticsearch-spark.jar"
 
 
-# ---------------------------------------------------------------- time
+# ---------------------------------------------------------------- 시각
 def now_kst() -> datetime:
+    """지금 한국 시각(테스트에서 바꿔 끼우기 쉽게 함수로 둠)."""
     return datetime.now(KST)
 
 
 def batch_of(collector, count: int, started: datetime) -> dict:
-    """What raw_arrived needs to find one collector run in HDFS."""
+    """수집기 실행 한 번을 HDFS에서 찾는 데 필요한 정보(raw_arrived가 씀). XCom으로 다음 작업에 넘어간다."""
     return {"topic": collector.topic, "run_id": collector.run_id, "count": count,
             "published_at": started.astimezone(timezone.utc).isoformat()}
 
 
-# ---------------------------------------------------------------- target selection
+# ---------------------------------------------------------------- 대상 고르기
 def parse_seasons(text: str) -> list:
-    """"001-003, 010" -> ["001", "002", "003", "010"]"""
+    """시즌 범위 문자열을 시즌 코드 목록으로: "001-003, 010" → ["001", "002", "003", "010"]"""
     out = []
     for part in (x.strip() for x in text.split(",") if x.strip()):
         lo, _, hi = part.partition("-")
@@ -56,7 +59,8 @@ def parse_seasons(text: str) -> list:
 
 
 def parse_games(text: str) -> dict:
-    """"023-9, 023-10 22-5" -> {"022": [5], "023": [9, 10]} (season-game numbers, commas or spaces)."""
+    """경기 번호 문자열을 시즌별 목록으로: "023-9, 023-10 22-5" → {"022": [5], "023": [9, 10]}
+    (쉼표나 공백으로 구분. 형식이 틀리면 관리자 화면에 보일 한국어 ValueError)."""
     out = {}
     for part in text.replace(",", " ").split():
         season, sep, gnum = part.partition("-")
@@ -67,7 +71,8 @@ def parse_games(text: str) -> dict:
 
 
 def parse_dates(text: str) -> tuple:
-    """"2026-11-05" -> (d, d); "2026-11-01~2026-11-05" -> (start, end). At most 31 days, start <= end."""
+    """날짜 문자열을 (시작, 끝)으로: "2026-11-05" → (그날, 그날), "2026-11-01~2026-11-05" → (시작, 끝).
+    시작 <= 끝, 31일 이내만 허용."""
     lo, sep, hi = text.strip().partition("~")
     try:
         start = date.fromisoformat(lo.strip())
@@ -80,6 +85,7 @@ def parse_dates(text: str) -> tuple:
 
 
 def merge_games(*parts: dict) -> dict:
+    """여러 {시즌: [경기번호]}를 합친다(중복 제거, 정렬)."""
     out = {}
     for part in parts:
         for season, gnums in part.items():
@@ -88,7 +94,7 @@ def merge_games(*parts: dict) -> dict:
 
 
 def pick_targets(schedule_items, confirmed: set, since: date, only: set | None = None):
-    """Finished games to collect: played on/after `since`, not CONFIRMED yet, optionally limited to `only` game numbers."""
+    """수집할 끝난 경기: `since` 이후에 열렸고 아직 CONFIRMED가 아닌 경기(`only`가 있으면 그 경기 번호만)."""
     from collectors.kovo_collectors import Game, is_finished
 
     out = []
@@ -103,19 +109,11 @@ def pick_targets(schedule_items, confirmed: set, since: date, only: set | None =
     return sorted(out, key=lambda g: g.gnum)
 
 
-def games_to_dicts(games):
-    return [g.__dict__.copy() for g in games]
-
-
-def games_from_dicts(rows):
-    from collectors.kovo_collectors import Game
-
-    return [Game(**r) for r in rows]
-
-
-# ---------------------------------------------------------------- collecting (Kafka)
+# ---------------------------------------------------------------- 수집 (Kafka로 발행)
+# client/publisher를 넘기지 않으면 실제 KOVO 클라이언트와 Kafka 발행기를 만든다(테스트는 가짜를 넘김)
 def collect_season_list(client=None, publisher=None):
-    """Publish the season list; return (batch, current season code, its game leagues)."""
+    """시즌 목록을 발행하고 (배치, 현재 시즌 코드, 그 시즌의 경기 리그 코드들)을 돌려준다.
+    현재 시즌 = 경기 리그가 하나라도 있는 가장 최근 시즌."""
     from collectors.kovo_client import KovoClient
     from collectors.kovo_collectors import SeasonCollector, leagues_of
     from collectors.publisher import KafkaPublisher
@@ -131,7 +129,7 @@ def collect_season_list(client=None, publisher=None):
 
 
 def collect_schedule(season: str, leagues=None, client=None, publisher=None):
-    """Publish one season's schedule; return (batch, schedule items) so the caller need not request it again."""
+    """한 시즌 일정을 발행하고 (배치, 일정 항목들)을 돌려준다. 항목을 돌려주므로 호출한 쪽이 다시 요청할 필요가 없다."""
     from collectors.kovo_client import KovoClient
     from collectors.kovo_collectors import ScheduleCollector
     from collectors.publisher import KafkaPublisher
@@ -144,7 +142,7 @@ def collect_schedule(season: str, leagues=None, client=None, publisher=None):
 
 
 def collect_games(games, client=None, publisher=None):
-    """Publish box scores and play-by-play of the given games; return one batch per collector."""
+    """주어진 경기들의 박스스코어와 문자중계를 발행하고, 수집기마다 배치 하나씩(목록)을 돌려준다."""
     from collectors.kovo_client import KovoClient
     from collectors.kovo_collectors import MatchCollector, RallyCollector
     from collectors.publisher import KafkaPublisher
@@ -162,7 +160,7 @@ def collect_games(games, client=None, publisher=None):
 
 
 def collect_news(client=None, publisher=None):
-    """Publish volleyball article metadata (RSS + Naver API when a key is set); return (batch, urls, failed feeds)."""
+    """배구 기사 메타데이터를 발행한다(RSS + 키가 있으면 네이버 API). (배치, URL들, 실패한 피드, URL별 제목)을 돌려준다."""
     from collectors.news import NewsCollector, NewsHttp
     from collectors.publisher import KafkaPublisher
 
@@ -172,12 +170,12 @@ def collect_news(client=None, publisher=None):
     return batch_of(col, n, started), col.urls, col.failures, col.titles
 
 
-# ---------------------------------------------------------------- HDFS arrival check
+# ---------------------------------------------------------------- HDFS 도착 확인
 def raw_arrived(batches, http=None, now=None) -> bool:
-    """True when each batch's messages are all in finished (visible) files under /raw/topic=.../dt=.../.
+    """각 배치의 메시지가 모두 /raw/topic=.../dt=.../ 아래 마감된(보이는) 파일에 들어갔으면 True.
 
-    raw-archiver finishes a file within about 6 minutes (design.md 1.9). Only files modified after the
-    batch was published are read, and a line belongs to a batch when it carries the batch's run_id.
+    raw-archiver는 파일을 약 6분 안에 마감한다(설계서 1.9). 배치를 발행한 시각 이후에 바뀐 파일만 읽고,
+    줄에 그 배치의 run_id가 들어 있으면 그 배치의 메시지로 센다. 파일은 WebHDFS(HTTP)로 스트리밍해 읽는다.
     """
     import requests
 
@@ -186,14 +184,14 @@ def raw_arrived(batches, http=None, now=None) -> bool:
     pending = {b["run_id"]: b for b in batches if b["count"] > 0}
     if not pending:
         return True
-    found = {rid: 0 for rid in pending}
+    found = dict.fromkeys(pending, 0)
     for topic in sorted({b["topic"] for b in pending.values()}):
         runs = {rid: b for rid, b in pending.items() if b["topic"] == topic}
         first = min(datetime.fromisoformat(b["published_at"]) for b in runs.values())
-        since_ms = int((first - timedelta(minutes=2)).timestamp() * 1000)
+        since_ms = int((first - timedelta(minutes=2)).timestamp() * 1000)  # 시계 차이를 감안해 2분 여유
         needles = {rid: f'"run_id":"{rid}"'.encode() for rid in runs}
         day, last = first.astimezone(KST).date(), now.astimezone(KST).date()
-        while day <= last:  # dt is the collection day in KST
+        while day <= last:  # dt는 수집한 날(한국 날짜). 자정을 넘겼을 수 있어 그날부터 오늘까지 본다
             for path in _finished_files(http, f"/raw/topic={topic}/dt={day.isoformat()}", since_ms):
                 with http.get(f"{WEBHDFS}{path}", params={"op": "OPEN", "user.name": "airflow"},
                               stream=True, timeout=60) as resp:
@@ -210,17 +208,19 @@ def raw_arrived(batches, http=None, now=None) -> bool:
 
 
 def _finished_files(http, directory, since_ms):
+    """폴더 안의 마감된 파일 중 since_ms 이후에 바뀐 것의 경로들(폴더가 없으면 [])."""
     resp = http.get(f"{WEBHDFS}{directory}", params={"op": "LISTSTATUS", "user.name": "airflow"}, timeout=30)
     if resp.status_code == 404:
         return []
     resp.raise_for_status()
     return [f"{directory}/{st['pathSuffix']}" for st in resp.json()["FileStatuses"]["FileStatus"]
-            if st["type"] == "FILE" and not st["pathSuffix"].startswith((".", "_"))  # hidden = still being written
+            if st["type"] == "FILE" and not st["pathSuffix"].startswith((".", "_"))  # 숨김 파일 = 아직 쓰는 중
             and st["modificationTime"] >= since_ms]
 
 
-# ---------------------------------------------------------------- serving DB
+# ---------------------------------------------------------------- 서비스 DB 조회
 def db_connect():
+    """서비스 DB(PostgreSQL) 접속."""
     import psycopg2
 
     return psycopg2.connect(host=os.environ.get("POSTGRES_HOST", "postgres"),
@@ -229,19 +229,21 @@ def db_connect():
                             user=os.environ["POSTGRES_USER"], password=os.environ["POSTGRES_PASSWORD"])
 
 
+# 경기를 시즌 코드로 찾을 때 쓰는 공통 FROM 절
 MATCHES = """
     FROM match m JOIN competition c ON c.id = m.competition_id JOIN season s ON s.id = c.season_id
 """
 
 
 def confirmed_game_nos(season: str) -> set:
+    """그 시즌의 CONFIRMED(확정) 경기 번호들. 이 경기들은 다시 수집하지 않는다."""
     with db_connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT m.game_no {MATCHES} WHERE s.code = %s AND m.status = 'CONFIRMED'", (season,))
         return {r[0] for r in cur.fetchall()}
 
 
 def games_to_watch(now: datetime) -> dict:
-    """Started but not CONFIRMED games scheduled since yesterday, by season: {"023": [5, 6]}."""
+    """어제 이후 예정됐고 이미 시작했지만 아직 CONFIRMED가 아닌 경기, 시즌별: {"023": [5, 6]}."""
     since = datetime.combine(now.astimezone(KST).date() - timedelta(days=1), datetime.min.time(), KST)
     with db_connect() as conn, conn.cursor() as cur:
         cur.execute(f"""SELECT s.code, m.game_no {MATCHES}
@@ -254,7 +256,7 @@ def games_to_watch(now: datetime) -> dict:
 
 
 def games_on_dates(start: date, end: date) -> dict:
-    """Games scheduled on these KST days (any league, any status), by season: {"023": [9, 10]}."""
+    """이 날짜들(한국 날짜)에 예정된 경기(리그·상태 무관), 시즌별: {"023": [9, 10]}."""
     with db_connect() as conn, conn.cursor() as cur:
         cur.execute(f"""SELECT s.code, m.game_no {MATCHES}
                         WHERE (m.scheduled_at AT TIME ZONE 'Asia/Seoul')::date BETWEEN %s AND %s
@@ -266,7 +268,7 @@ def games_on_dates(start: date, end: date) -> dict:
 
 
 def game_report(games: dict) -> list:
-    """(season, game_no, scheduled_at, status) of the given games, for the end-of-run log."""
+    """주어진 경기들의 (시즌, 경기번호, 예정 시각, 상태). 실행 끝의 로그용."""
     rows = []
     with db_connect() as conn, conn.cursor() as cur:
         for season, gnums in games.items():
@@ -277,7 +279,7 @@ def game_report(games: dict) -> list:
 
 
 def match_report(season: str, since: date) -> list:
-    """Status of games played since `since`, for the end-of-run log."""
+    """`since` 이후 지금까지 열린 경기들의 상태. 실행 끝의 로그용."""
     with db_connect() as conn, conn.cursor() as cur:
         cur.execute(f"""SELECT m.game_no, m.scheduled_at, m.status {MATCHES}
                         WHERE s.code = %s AND m.scheduled_at >= %s AND m.scheduled_at <= now()
@@ -285,16 +287,16 @@ def match_report(season: str, since: date) -> list:
         return cur.fetchall()
 
 
-# ---------------------------------------------------------------- data quality (PIPE-10) and corrections (ADM-03)
-# A regular-season game this long after its start without a result means collection is behind.
+# ---------------------------------------------------------------- 데이터 품질(PIPE-10)과 보정(ADM-03)
+# 정규리그 경기가 시작하고 이만큼 지나도 결과가 없으면 수집이 밀린 것으로 본다.
 STALE_AFTER_HOURS = 6
 
 
 def quality_report(since: datetime, now: datetime) -> dict:
-    """What the quality gate looks at, from the serving DB:
-      errors  OPEN ERROR issues of games since `since` (ACKNOWLEDGED ones are known gaps and are skipped)
-      stale   regular-season games since `since` that started STALE_AFTER_HOURS ago and still have no result
-      open    OPEN issues of all seasons by severity (for the log)"""
+    """품질 관문이 보는 것들(서비스 DB에서):
+      errors  `since` 이후 경기의 OPEN 상태 ERROR 문제(ACKNOWLEDGED는 알려진 빈틈이라 제외)
+      stale   `since` 이후 정규리그 경기 중 시작한 지 STALE_AFTER_HOURS가 지났는데 결과가 없는 경기
+      open    모든 시즌의 OPEN 문제 수, 심각도별(로그용)"""
     with db_connect() as conn, conn.cursor() as cur:
         cur.execute("""SELECT qi.season_code || '-' || qi.game_no, qi.set_no, qi.rule, qi.detail
                        FROM quality_issue qi JOIN match m ON m.id = qi.match_id
@@ -312,7 +314,7 @@ def quality_report(since: datetime, now: datetime) -> dict:
 
 
 def gate_problems(report: dict) -> list:
-    """Lines that make the quality gate fail; empty = pass."""
+    """품질 관문을 실패시키는 문제 줄들. 비어 있으면 통과."""
     out = [f"{game} set {set_no or '-'}: {rule} {detail}" for game, set_no, rule, detail in report["errors"]]
     out += [f"{game}: started {STALE_AFTER_HOURS}h+ ago, still {status} (result not collected)"
             for game, status in report["stale"]]
@@ -320,8 +322,8 @@ def gate_problems(report: dict) -> list:
 
 
 def corrected_seasons(since: datetime) -> list:
-    """Seasons with a match-level correction added, changed or turned off since `since`: they are curated again
-    so the marts pick it up. Player and team corrections need no extra season (those rows are global)."""
+    """`since` 이후 경기 단위 보정이 추가·변경·해제된 시즌들: 다시 정제해야 마트에 반영된다.
+    선수·팀 보정은 시즌과 무관한 행이라 추가로 정제할 시즌이 없다. 보정 키의 앞 세 글자가 시즌 코드다."""
     with db_connect() as conn, conn.cursor() as cur:
         cur.execute("""SELECT DISTINCT left(key, 3) FROM data_correction
                        WHERE updated_at >= %s AND target NOT IN ('player', 'team') ORDER BY 1""", (since,))
@@ -329,8 +331,8 @@ def corrected_seasons(since: datetime) -> list:
 
 
 def title_key(title: str) -> str | None:
-    """Same rule as flink_jobs/article_tags.py title_key (a test keeps the two equal): the enricher stores one article
-    per key for 7 days, so a second URL of the same story is merged, not stored."""
+    """flink_jobs/article_tags.py의 title_key와 같은 규칙(테스트가 둘이 같은지 지킨다): enricher는 키마다 7일 동안
+    기사 하나만 저장하므로, 같은 기사의 두 번째 URL은 저장되지 않고 앞 기사로 합쳐진다."""
     import re
     import unicodedata
 
@@ -342,8 +344,8 @@ def title_key(title: str) -> str | None:
 
 
 def resolve_stored(urls, titles, stored_urls, recent) -> dict:
-    """Which stored article stands for each collected URL: itself, or an article with the same title key
-    (`recent`: [(url, title)] stored in the last days). URLs with neither are missing."""
+    """수집한 URL마다 그것을 대신하는 저장된 기사: 자기 자신, 또는 제목 키가 같은 기사
+    (`recent`: 최근 며칠 저장된 [(url, 제목)]). 둘 다 없으면 아직 저장 안 된 것(결과에 없음)."""
     by_key = {}
     for url, title in recent:
         k = title_key(title)
@@ -359,9 +361,9 @@ def resolve_stored(urls, titles, stored_urls, recent) -> dict:
 
 
 def articles_stored(urls, titles=None) -> tuple[int, int]:
-    """(how many of these collected articles are in PostgreSQL, how many in Elasticsearch `articles`), counting an
-    article merged into an earlier one with the same title (2026-11-09: two outlets' copies of one story kept the
-    sensor waiting until it timed out). Flink article-enricher writes both stores."""
+    """(수집한 기사 중 PostgreSQL에 있는 수, Elasticsearch `articles`에 있는 수). 제목이 같아 앞 기사로 합쳐진
+    것도 저장된 것으로 센다(2026-11-09: 두 언론사의 같은 기사 때문에 센서가 시간 초과될 때까지 기다린 일이 있었음).
+    두 저장소 모두 Flink article-enricher가 쓴다. Elasticsearch 문서 id는 sha1(url)."""
     import hashlib
 
     import requests
@@ -384,7 +386,7 @@ def articles_stored(urls, titles=None) -> tuple[int, int]:
 
 
 def replay_match(key: str, speed: float, publisher=None) -> dict:
-    """Re-publish a finished game's play-by-play to kovo.live (PIPE-11). Blocks until the last rally is sent."""
+    """끝난 경기의 문자중계를 kovo.live로 다시 보낸다(PIPE-11). 마지막 랠리를 보낼 때까지 기다린다."""
     from collectors.publisher import KafkaPublisher
     from collectors.replay import MatchReplayer
 
@@ -394,7 +396,7 @@ def replay_match(key: str, speed: float, publisher=None) -> dict:
 
 
 def live_state(key: str):
-    """(session, status, sets) of a match in live_match_state, or None."""
+    """live_match_state에 있는 그 경기의 (세션, 상태, 세트 스코어). 없으면 None."""
     season, gnum = key.split("-")
     with db_connect() as conn, conn.cursor() as cur:
         cur.execute("""
@@ -406,38 +408,35 @@ def live_state(key: str):
 
 
 def run_index_entities():
-    """spark-submit index_entities.py: Elasticsearch `entities` (teams and players for search) rebuilt in full."""
+    """index_entities.py 제출: 검색용 Elasticsearch `entities`(팀·선수)를 통째로 다시 만든다."""
     run_spark_job("index_entities.py")
 
 
 def run_player_types():
-    """spark-submit player_types.py: K-means player groups and similar players (ANL-06), full refresh."""
+    """player_types.py 제출: K-means 선수 유형과 비슷한 선수(ANL-06), 전체 교체."""
     run_spark_job("player_types.py")
 
 
 def run_player_ratings():
-    """spark-submit player_ratings.py: position ratings for the player cards (1-99 per ability), full refresh."""
+    """player_ratings.py 제출: 선수 카드의 포지션별 능력치(능력치마다 1~99), 전체 교체."""
     run_spark_job("player_ratings.py")
 
 
 # ---------------------------------------------------------------- Spark
 def run_curation(seasons):
-    """spark-submit curate_kovo.py on YARN (client mode; the driver runs in this Airflow worker)."""
-    from airflow.providers.apache.spark.hooks.spark_submit import SparkSubmitHook
-
+    """curate_kovo.py를 YARN에 제출한다(client 모드: 드라이버는 이 Airflow 작업자 안에서 돈다)."""
     seasons = ",".join(sorted(set(seasons)))
-    SparkSubmitHook(conn_id="spark_yarn", conf=SPARK_CONF, jars=SPARK_JARS, name=f"curate-kovo-{seasons}",
-                    application_args=["--seasons", seasons]).submit(f"{SPARK_JOBS}/curate_kovo.py")
+    run_spark_job("curate_kovo.py", "--seasons", seasons, name=f"curate-kovo-{seasons}")
 
 
-AIRFLOW_API = os.environ.get("AIRFLOW_API_URL", "http://localhost:8080").rstrip("/")
-CURATING_DAGS = ("kovo_daily", "kovo_reprocess")
+AIRFLOW_API = os.environ.get("AIRFLOW_API_URL", "http://localhost:8080").rstrip("/")  # Airflow REST API 주소
+CURATING_DAGS = ("kovo_daily", "kovo_reprocess")  # 정제를 하는 DAG들(예측이 이들을 기다린다)
 
 
 def curation_running(http=None) -> list:
-    """DAGs among CURATING_DAGS with a queued or running run (Airflow REST API; tasks cannot read the metadata DB).
-    Predictions wait for these so their features include the newest results (seen 2026-11-06 and 11-09:
-    after the PC was off, ml_daily_predict ran before kovo_daily had curated the missed games)."""
+    """CURATING_DAGS 중 대기 중이거나 실행 중인 실행이 있는 DAG들(Airflow REST API로. 작업은 메타데이터 DB를 직접
+    읽을 수 없다). 예측은 이 DAG들을 기다려야 최신 결과가 특징에 들어간다(2026-11-06, 11-09: PC가 꺼져 있던 뒤
+    ml_daily_predict가 kovo_daily보다 먼저 돌아 놓친 경기가 빠진 일이 있었음)."""
     import requests
 
     http = http or requests.Session()
@@ -452,15 +451,12 @@ def curation_running(http=None) -> list:
 
 
 def run_marts():
-    """spark-submit build_marts.py: Elo ratings and season summaries, rebuilt from all curated seasons."""
-    from airflow.providers.apache.spark.hooks.spark_submit import SparkSubmitHook
-
-    SparkSubmitHook(conn_id="spark_yarn", conf=SPARK_CONF, jars=SPARK_JARS, name="build-marts") \
-        .submit(f"{SPARK_JOBS}/build_marts.py")
+    """build_marts.py 제출: Elo와 시즌 요약을 모든 정제 시즌으로 다시 만든다."""
+    run_spark_job("build_marts.py", name="build-marts")
 
 
 def run_spark_job(script, *args, name=None):
-    """spark-submit any job in spark_jobs/ on YARN (same settings as the curation job)."""
+    """spark_jobs/의 작업 하나를 YARN에 제출한다(모든 작업이 같은 설정). 공용 적재 모듈 pg_merge.py도 함께 보낸다."""
     from airflow.providers.apache.spark.hooks.spark_submit import SparkSubmitHook
 
     SparkSubmitHook(conn_id="spark_yarn", conf=SPARK_CONF, jars=SPARK_JARS, name=name or script.removesuffix(".py"),

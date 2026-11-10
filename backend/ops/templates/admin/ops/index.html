@@ -1,5 +1,6 @@
 {% extends "admin/index.html" %}
-{% comment %}PIPE-09: the admin sees unchecked job failures as soon as they open the admin.{% endcomment %}
+{% comment %}관리자 첫 화면(PIPE-09): 관리자가 들어오자마자 확인하지 않은 작업 실패가 있는지 보이게 한다.
+Django 기본 첫 화면(admin/index.html)을 확장해 맨 위에 안내 한 줄을 더하고, 나머지는 그대로 둔다(block.super).{% endcomment %}
 {% load ops_admin %}
 {% block content %}
 {% open_job_alerts as n %}

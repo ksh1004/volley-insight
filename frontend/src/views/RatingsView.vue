@@ -1,8 +1,8 @@
 <script setup>
-// Position ratings by position (player cards, spark_jobs/player_ratings.py): the top three as small cards, then every
-// qualified player with the overall and each ability; any column sorts (rows slide to their new place).
-// Two views: one season, or 역대 통산 (career cards; ranked = 3+ qualified seasons). ?scope=career opens the latter.
-// Old rows stay (dimmed) while another position or season loads, so switching never blanks the page.
+// 포지션별 능력치 순위 화면(선수 카드, spark_jobs/player_ratings.py): 위에 상위 3명 카드, 아래에 자격 선수 전원의
+// 종합과 능력치별 점수 표. 어느 열이든 눌러 정렬할 수 있다(행이 새 자리로 미끄러짐).
+// 보기 두 가지: 한 시즌, 또는 역대 통산(통산 카드. 순위는 자격 시즌 3번 이상만). ?scope=career면 역대 통산으로 열린다.
+// 다른 포지션·시즌을 불러오는 동안 이전 행을 흐리게 남겨 두어 화면이 비지 않는다.
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { getRatings } from '@/api/client'
@@ -16,10 +16,10 @@ import { useFiltersStore } from '@/stores/filters'
 const filters = useFiltersStore()
 const route = useRoute()
 const position = ref(POSITION_ORDER.includes(route.query.position) ? route.query.position : 'OH')
-const includeAll = ref(false)
-const scope = ref(route.query.scope === 'career' ? 'career' : 'season')
+const includeAll = ref(false) // 순위 자격이 안 되는 선수도 보기
+const scope = ref(route.query.scope === 'career' ? 'career' : 'season') // 'season' | 'career'
 const career = computed(() => scope.value === 'career')
-// keep ?scope= in the address without a router navigation (App.vue remounts pages on every route change)
+// ?scope=를 주소에 남기되 라우터로 이동하지 않는다(App.vue는 주소가 바뀌면 화면을 통째로 다시 만들기 때문)
 watch(scope, (v) => {
   const url = new URL(window.location.href)
   if (v === 'career') url.searchParams.set('scope', 'career')
@@ -29,6 +29,7 @@ watch(scope, (v) => {
 const data = ref(null)
 const state = ref({ loading: true, error: null })
 
+// 순위 불러오기. 빠르게 여러 번 바꿔도 마지막 요청의 응답만 반영한다(requestNo)
 let requestNo = 0
 async function load() {
   const mine = ++requestNo
@@ -48,12 +49,13 @@ onMounted(async () => {
   await filters.init()
   const g = route.query.gender
   if (['M', 'F'].includes(g)) filters.set({ gender: g })
-  else if (!['M', 'F'].includes(filters.gender)) filters.set({ gender: 'M' }) // ratings are per division
+  else if (!['M', 'F'].includes(filters.gender)) filters.set({ gender: 'M' }) // 능력치는 남녀부별로만 비교한다
   await load()
 })
+// 조건이 바뀌면 다시 불러온다(역대 통산일 때는 시즌이 바뀌어도 다시 부르지 않음)
 watch(() => [career.value || filters.season, filters.gender, position.value, includeAll.value], load)
 
-// early in a season few players have 10+ sets: say so and offer the season before
+// 시즌 초반에는 10세트 이상 뛴 선수가 적다: 그렇다고 알리고 지난 시즌 보기 버튼을 준다
 const ranked = computed(() => (data.value?.rows || []).filter((r) => r.rank).length)
 const previousSeason = computed(() => {
   const i = filters.seasons.findIndex((s) => s.code === data.value?.season?.code)
@@ -61,14 +63,17 @@ const previousSeason = computed(() => {
 })
 const early = computed(() => data.value?.season && data.value.season.code === filters.seasons[0]?.code && ranked.value < 8)
 
+// 상위 3명(순위가 있는 선수 중)
 const top3 = computed(() => (data.value?.rows || []).filter((r) => r.rank).slice(0, 3))
-// the player's best counted ability, e.g. "블로킹 84" under his name on the podium
+// 상위 3명 카드에 적을 가장 높은 능력치(종합에 들어가는 것만). 예: "블로킹 84"
 const strength = (r) => {
   const best = (data.value?.abilities || []).filter((a) => a.weight && r.scores[a.key] != null)
     .sort((a, b) => r.scores[b.key] - r.scores[a.key])[0]
   return best ? `${best.label} ${r.scores[best.key]}` : ''
 }
+// 통산 기간 표시: "07–08 ~ 25–26"
 const period = (r) => `${yearsShort(r.first.years)}${r.last.code === r.first.code ? '' : ` ~ ${yearsShort(r.last.years)}`}`
+// 표의 열: 시즌 보기는 팀, 역대 보기는 기간·시즌 수·최고 시즌. 능력치 열은 포지션마다 다르다
 const columns = computed(() => [
   { key: 'rank', label: '순위', get: (r) => r.rank ?? 999 , fmt: (r) => r.rank ?? '-' },
   { key: 'name', label: '선수', left: true, sticky: true, get: (r) => r.player.name },
@@ -85,6 +90,7 @@ const columns = computed(() => [
     : []),
   { key: 'sets', label: '세트', fmt: (r) => r.sets.toLocaleString() },
 ])
+// 선수 링크: 시즌 보기면 그 시즌으로, 역대 보기면 통산 카드가 먼저 보이게
 const playerLink = (r) => ({ path: `/players/${r.player.code}`,
                              query: data.value.season ? { season: data.value.season.code } : { card: 'career' } })
 </script>

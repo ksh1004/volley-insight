@@ -1,5 +1,6 @@
 {% extends "admin/change_list.html" %}
-{% comment %}ADM-01 수집 현황: Airflow jobs, collector runs (COL-08) and, below, the job failures (PIPE-09).{% endcomment %}
+{% comment %}ADM-01 수집 현황 화면: Airflow 작업별 현황(최근 실행 점, 다음 실행), 수집기 실행 기록(COL-08), 그 아래에
+작업 실패 목록(PIPE-09). 데이터는 ops/admin.py JobAlertAdmin.changelist_view가 넣어 준다(dags, collection 등).{% endcomment %}
 
 {% block extrastyle %}{{ block.super }}
 <style>

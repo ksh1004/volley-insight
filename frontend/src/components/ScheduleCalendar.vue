@@ -1,8 +1,8 @@
 <script setup>
-// WEB-02 month calendar: every day of the month with its games (time or result); picking a day lists its match
-// cards under the calendar. Keyboard: arrow keys move between days (one tab stop for the whole calendar), Enter/
-// Space picks. Phones show the date and one dot per game, the list below carries the details.
-// Motion: the picked day's games swap in; the picked cell's ring and today's mark are CSS transitions only.
+// WEB-02 일정 화면의 월 달력: 그 달의 모든 날과 날마다의 경기(예정이면 시각, 끝났으면 결과). 날을 고르면 달력 아래에
+// 그날의 경기 카드가 나온다. 키보드: 달력 전체가 탭 한 번에 들어가고(roving tabindex), 화살표로 날을 옮기며
+// Enter/Space로 고른다. 휴대폰에서는 날짜와 경기마다 점 하나만 보이고, 자세한 것은 아래 목록이 보여 준다.
+// 모션: 고른 날의 경기 목록이 바뀌어 들어오고, 고른 칸의 테두리와 '오늘' 표시는 CSS 전환으로만 움직인다.
 import { computed, nextTick, ref, watch } from 'vue'
 import MatchCard from '@/components/MatchCard.vue'
 import { GENDERS } from '@/constants/volley'
@@ -11,23 +11,26 @@ import { fmtTime } from '@/utils/format'
 const props = defineProps({
   month: { type: String, required: true }, // YYYY-MM
   matches: { type: Array, required: true },
-  today: { type: String, default: '' }, // YYYY-MM-DD (KST)
-  showGender: Boolean, // both divisions are listed
+  today: { type: String, default: '' }, // 오늘 YYYY-MM-DD(서울)
+  showGender: Boolean, // 남녀부 경기가 섞여 있어 성별 표시가 필요할 때
 })
 
 const WEEK = ['일', '월', '화', '수', '목', '금', '토']
+// 경기 시각 → 서울 날짜 "YYYY-MM-DD"
 const kstDate = (iso) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date(iso))
 const done = (m) => ['FINISHED', 'CONFIRMED'].includes(m.status)
 
+// 날짜 → 그날 경기들
 const byDate = computed(() => {
   const out = {}
   for (const m of props.matches) (out[kstDate(m.scheduled_at)] ||= []).push(m)
   return out
 })
+// 달력 칸들: 1일 앞의 빈칸(요일 맞추기) + 날마다 한 칸
 const cells = computed(() => {
   const [y, mo] = props.month.split('-').map(Number)
-  const lead = new Date(Date.UTC(y, mo - 1, 1)).getUTCDay() // weekday of the 1st (calendar date, no time zone)
-  const days = new Date(Date.UTC(y, mo, 0)).getUTCDate()
+  const lead = new Date(Date.UTC(y, mo - 1, 1)).getUTCDay() // 1일의 요일(시간대 영향 없이 날짜만으로 계산)
+  const days = new Date(Date.UTC(y, mo, 0)).getUTCDate() // 그 달의 날 수(다음 달 0일 = 이번 달 마지막 날)
   const out = Array.from({ length: lead }, (_, i) => ({ blank: true, key: `b${i}` }))
   for (let d = 1; d <= days; d++) {
     const date = `${props.month}-${String(d).padStart(2, '0')}`
@@ -37,7 +40,7 @@ const cells = computed(() => {
 })
 const days = computed(() => cells.value.filter((c) => !c.blank))
 
-// ---- picked day: today if it has games, else the first day with games
+// ---- 고른 날: 오늘 경기가 있으면 오늘, 아니면 경기가 있는 첫날
 const picked = ref('')
 function defaultPick() {
   const withGames = days.value.filter((c) => c.games.length)
@@ -46,7 +49,7 @@ function defaultPick() {
 watch(() => [props.month, props.matches], defaultPick, { immediate: true })
 const pickedDay = computed(() => days.value.find((c) => c.date === picked.value))
 
-// ---- keyboard: one tab stop, arrows move the focus (and the pick) by a day / a week
+// ---- 키보드: 탭 한 번으로 들어오고, ←→ 하루, ↑↓ 일주일, Home/End 그 달의 처음·끝으로 포커스(와 선택)를 옮긴다
 const grid = ref(null)
 async function move(e, cell) {
   const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: 7, ArrowUp: -7, Home: -(cell.d - 1), End: days.value.length - cell.d }[e.key]
@@ -58,6 +61,7 @@ async function move(e, cell) {
   grid.value?.querySelector(`[data-date="${next.date}"]`)?.focus()
 }
 
+// 칸마다 화면 낭독기가 읽을 설명(날짜, 요일, 오늘 여부, 경기들)
 const label = (c) => {
   const head = `${Number(props.month.slice(5))}월 ${c.d}일 ${WEEK[c.weekday]}요일${c.date === props.today ? ', 오늘' : ''}`
   if (!c.games.length) return `${head}, 경기 없음`

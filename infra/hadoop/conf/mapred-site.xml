@@ -1,4 +1,5 @@
 <?xml version="1.0"?>
+<!-- MapReduce 작업도 YARN 위에서 돌게 한다(이 프로젝트는 Spark만 쓰지만 하둡 기본 구성) -->
 <configuration>
   <property><name>mapreduce.framework.name</name><value>yarn</value></property>
 </configuration>

@@ -1,10 +1,12 @@
 <?xml version="1.0"?>
+<!-- YARN 설정: 자원 관리자 주소, 노드매니저가 Spark executor에 내줄 메모리·코어, 로그 폴더 -->
 <configuration>
   <property><name>yarn.resourcemanager.hostname</name><value>resourcemanager</value></property>
   <property><name>yarn.resourcemanager.bind-host</name><value>0.0.0.0</value></property>
   <property><name>yarn.nodemanager.bind-host</name><value>0.0.0.0</value></property>
 
-  <!-- dev sizing: one nodemanager with 3 GB / 4 cores for Spark executors (design.md 1.5) -->
+  <!-- 개발용 크기: 노드매니저 하나가 Spark executor에 3GB / 4코어를 내준다(설계서 1.5).
+       가상·실제 메모리 초과 검사는 끈다(컨테이너 안에서 잘못 판정해 executor를 죽이는 일을 막기 위해) -->
   <property><name>yarn.nodemanager.resource.memory-mb</name><value>3072</value></property>
   <property><name>yarn.nodemanager.resource.cpu-vcores</name><value>4</value></property>
   <property><name>yarn.scheduler.minimum-allocation-mb</name><value>256</value></property>
@@ -15,6 +17,7 @@
   <property><name>yarn.nodemanager.local-dirs</name><value>/data/nm-local</value></property>
   <property><name>yarn.nodemanager.log-dirs</name><value>/data/nm-logs</value></property>
   <property><name>yarn.log-aggregation-enable</name><value>true</value></property>
+  <!-- executor 컨테이너에 넘겨줄 환경 변수 목록(PYSPARK_PYTHON 포함: 드라이버와 같은 파이썬을 쓰도록) -->
   <property><name>yarn.nodemanager.env-whitelist</name>
     <value>JAVA_HOME,HADOOP_COMMON_HOME,HADOOP_HDFS_HOME,HADOOP_CONF_DIR,CLASSPATH_PREPEND_DISTCACHE,HADOOP_YARN_HOME,HADOOP_HOME,PATH,LANG,TZ,HADOOP_MAPRED_HOME,PYSPARK_PYTHON</value></property>
 </configuration>

@@ -1,7 +1,7 @@
 <script setup>
-// Player indicators with the percentile among qualified players of the same position (ANL-05).
-// Shows the indicators that matter for the position; the percentile is written as text, the bar only repeats it.
-// Motion: the bars fill from the left one after another when first seen, and the percentile counts up with them.
+// 선수 지표와 같은 포지션 순위 자격 선수 중 백분위(ANL-05). 선수 화면의 '포지션 내 위치'.
+// 포지션에 중요한 지표만 보여 준다(BY_POSITION). 백분위는 숫자로 적고, 막대는 그것을 반복할 뿐이다.
+// 모션: 처음 보일 때 막대가 왼쪽부터 차례로 차고, 백분위 숫자도 함께 세어 올라간다.
 import { computed, ref } from 'vue'
 import { POSITIONS } from '@/constants/volley'
 import AnimatedNumber from '@/motion/AnimatedNumber.vue'
@@ -12,6 +12,7 @@ const props = defineProps({ profile: { type: Object, required: true } })
 const el = ref(null)
 const seen = useInView(el)
 
+// 지표 키 → [화면 이름, 값 형식 함수]
 const LABELS = {
   attack_success_rate: ['공격 성공률', (v) => `${num(v, 1)}%`],
   attack_efficiency: ['공격 효율', (v) => `${num(v, 1)}%`],
@@ -22,6 +23,7 @@ const LABELS = {
   set_per_set: ['세트당 세트', (v) => num(v, 2)],
   error_per_set: ['세트당 범실 (적을수록 좋음)', (v) => num(v, 2)],
 }
+// 포지션마다 보여 줄 지표(순서대로)
 const BY_POSITION = {
   OH: ['attack_success_rate', 'attack_efficiency', 'receive_efficiency', 'serve_per_set', 'dig_per_set', 'block_per_set'],
   OP: ['attack_success_rate', 'attack_efficiency', 'serve_per_set', 'block_per_set', 'error_per_set'],
@@ -32,6 +34,7 @@ const BY_POSITION = {
 const rows = computed(() => (BY_POSITION[props.profile.position] || Object.keys(LABELS))
   .filter((k) => props.profile.values[k] != null)
   .map((k) => ({ key: k, label: LABELS[k][0], value: LABELS[k][1](props.profile.values[k]), pct: props.profile.percentiles[k] })))
+// 백분위 구간(막대 색): 상위 20% / 중간 / 하위
 const tier = (p) => (p == null ? '' : p >= 80 ? 'top' : p >= 50 ? 'mid' : 'low')
 </script>
 

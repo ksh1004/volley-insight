@@ -1,5 +1,6 @@
 <script setup>
-// WEB-09: latest volleyball articles, filter by team. The filter lives in the URL (?team=) so it can be shared.
+// WEB-09 뉴스 화면: 최신 배구 기사, 팀으로 거르기. 필터는 주소(?team=)에 담아 링크로 공유할 수 있다.
+// 20개씩 불러오고 '더 보기'로 이어 붙인다.
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getArticles, getTeams } from '@/api/client'
@@ -17,6 +18,7 @@ const page = ref(1)
 const hasMore = ref(false)
 const state = ref({ loading: true, more: false, error: null })
 
+// reset이면 첫 페이지부터 새로, 아니면 다음 페이지를 뒤에 붙인다('더 보기')
 async function load(reset = true) {
   if (reset) { page.value = 1; state.value.loading = true } else state.value.more = true
   try {
@@ -32,7 +34,9 @@ async function load(reset = true) {
   }
 }
 
+// '더 보기' 버튼
 function more() { page.value += 1; load(false) }
+// 팀 필터 선택: 주소만 바꾸면 위의 watch(team)가 다시 불러온다
 function pick(code) { router.replace({ query: code ? { team: code } : {} }) }
 
 onMounted(async () => {
@@ -41,6 +45,7 @@ onMounted(async () => {
 })
 watch(team, () => load())
 
+// 팀 필터 버튼을 남자부/여자부로 나눠 보여 주기 위한 묶음
 const byGender = computed(() => ['M', 'F'].map((g) => ({ g, teams: teams.value.filter((t) => t.gender === g) })))
 </script>
 

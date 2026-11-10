@@ -1,15 +1,18 @@
-"""Generate dashboard.ndjson: Kibana data views and the pipeline operations dashboard (ADM-04, NFR-23).
+"""dashboard.ndjson을 만든다: Kibana 데이터 뷰와 파이프라인 운영 대시보드(ADM-04, NFR-23).
 
-  python infra/kibana/build_dashboard.py      # rewrites infra/kibana/dashboard.ndjson
-The kibana-setup service (compose.yaml) imports the file with overwrite, so edits here + a rerun update Kibana.
+  python infra/kibana/build_dashboard.py      # infra/kibana/dashboard.ndjson을 다시 씀
+kibana-setup 서비스(compose.yaml)가 이 파일을 덮어쓰기로 가져오므로, 여기를 고치고 다시 돌리면 Kibana가 바뀐다.
+(대시보드를 Kibana 화면에서 손으로 만들지 않고 코드로 만들어, 다시 설치해도 똑같이 재현되게 했다.)
 
-Panels (sources: Filebeat logs-volley-* and ops-collection-*, Metricbeat metrics-volley, Flink `articles`):
-  collection success rate per job, failed runs, collected records over time   <- ops.collection-log via Filebeat
-  Kafka consumer lag per group                                                  <- Metricbeat kafka module
-  Airflow DAG runs (duration, start delay) and task queue delay                 <- Metricbeat sql module
-  error logs per service + latest error lines                                   <- container logs
-  open data quality issues by rule, open errors now                            <- Metricbeat sql module (serving DB)
-  articles stored per hour by publisher                                         <- Elasticsearch `articles`
+패널들(출처: Filebeat logs-volley-*와 ops-collection-*, Metricbeat metrics-volley, Flink가 쓴 `articles`):
+  작업별 수집 성공률, 실패한 실행, 시간별 수집 레코드 수     ← Filebeat가 옮긴 ops.collection-log
+  컨슈머 그룹별 Kafka 지연                                  ← kafka-lag 서비스(Metricbeat 형식)
+  Airflow DAG 실행(걸린 시간, 시작 지연)과 작업 대기 시간     ← Metricbeat sql 모듈
+  서비스별 오류 로그 수 + 최근 오류 줄                       ← 컨테이너 로그
+  규칙별 미해결 품질 문제, 지금 열린 오류 수                  ← Metricbeat sql 모듈(서비스 DB)
+  언론사별 시간당 저장 기사 수                              ← Elasticsearch `articles`
+
+용어: Lens = Kibana의 차트 편집기. 패널 하나 = Lens 시각화 객체 하나(열(columns) 정의 + 차트 종류).
 """
 import json
 from pathlib import Path
@@ -17,6 +20,7 @@ from pathlib import Path
 OUT = Path(__file__).with_name("dashboard.ndjson")
 VERSION = "8.17.4"
 
+# 데이터 뷰 id → (색인 패턴, 시간 필드, 화면 이름)
 DATA_VIEWS = {
     "dv-logs": ("logs-volley-*", "@timestamp", "컨테이너 로그"),
     "dv-ops": ("ops-collection-*", "@timestamp", "수집 기록"),
@@ -25,14 +29,16 @@ DATA_VIEWS = {
 }
 
 
-# ------------------------------------------------------------------ Lens columns
+# ------------------------------------------------------------------ Lens 열(column) 정의 도우미
 def date_hist(field="@timestamp"):
+    """가로축용 시간 구간 열(자동 간격)."""
     return {"label": "시간", "dataType": "date", "operationType": "date_histogram", "sourceField": field,
             "isBucketed": True, "scale": "interval",
             "params": {"interval": "auto", "includeEmptyRows": True, "dropPartials": False}}
 
 
 def terms(field, label, order_by, size=10):
+    """값별로 나누는 열(예: 작업 이름별). order_by 열 기준 상위 size개."""
     return {"label": label, "dataType": "string", "operationType": "terms", "sourceField": field, "isBucketed": True,
             "scale": "ordinal", "customLabel": True,
             "params": {"size": size, "orderBy": {"type": "column", "columnId": order_by}, "orderDirection": "desc",
@@ -40,11 +46,13 @@ def terms(field, label, order_by, size=10):
 
 
 def count(label="건수"):
+    """문서 수를 세는 열."""
     return {"label": label, "dataType": "number", "operationType": "count", "isBucketed": False, "scale": "ratio",
             "sourceField": "___records___", "customLabel": True, "params": {"emptyAsNull": False}}
 
 
 def metric(op, field, label, decimals=None):
+    """필드에 집계 연산(op: average, max, sum 등)을 적용한 숫자 열."""
     col = {"label": label, "dataType": "number", "operationType": op, "sourceField": field, "isBucketed": False,
            "scale": "ratio", "customLabel": True, "params": {"emptyAsNull": True}}
     if decimals is not None:
@@ -53,13 +61,15 @@ def metric(op, field, label, decimals=None):
 
 
 def last_value(field, label):
+    """가장 최근 문서의 값을 보여 주는 열."""
     return {"label": label, "dataType": "number", "operationType": "last_value", "sourceField": field,
             "isBucketed": False, "scale": "ratio", "customLabel": True,
             "params": {"sortField": "@timestamp", "showArrayValues": False, "format": {"id": "number", "params": {"decimals": 0}}}}
 
 
 def lens(obj_id, title, data_view, columns, visualization, vis_type, query="", description=""):
-    """columns: ordered {column id: column}. The layer is always L1."""
+    """Lens 시각화 저장 객체 하나를 만든다(Kibana 가져오기 형식). id가 고정이라 다시 가져오면 덮어쓴다.
+    columns: 순서 있는 {열 id: 열 정의}. 레이어는 항상 L1 하나."""
     return {
         "id": obj_id, "type": "lens", "managed": False, "typeMigrationVersion": "8.9.0", "coreMigrationVersion": VERSION,
         "attributes": {
@@ -77,6 +87,7 @@ def lens(obj_id, title, data_view, columns, visualization, vis_type, query="", d
 
 
 def xy(series, x, y, split=None, legend="right"):
+    """막대/선 차트 설정(series: 'bar_stacked', 'line' 등, x/y/split: 열 id)."""
     layer = {"layerId": "L1", "layerType": "data", "seriesType": series, "xAccessor": x, "accessors": y, "position": "top",
              "showGridlines": False}
     if split:
@@ -86,7 +97,7 @@ def xy(series, x, y, split=None, legend="right"):
             "axisTitlesVisibilitySettings": {"x": False, "yLeft": True, "yRight": True}}
 
 
-# ------------------------------------------------------------------ panels
+# ------------------------------------------------------------------ 패널들
 PANELS = [
     lens("ops-success-rate", "수집 성공률 (작업별)", "dv-ops",
          {"job": terms("collection.job_name.keyword", "작업", "n"), "status": terms("collection.status.keyword", "결과", "n", 3),
@@ -149,7 +160,7 @@ ERROR_SEARCH = {
     "references": [{"name": "kibanaSavedObjectMeta.searchSourceJSON.index", "type": "index-pattern", "id": "dv-logs"}],
 }
 
-# (panel id, x, y, w, h) on Kibana's 48-column grid
+# 대시보드 배치: (패널 id, x, y, 폭, 높이). Kibana 대시보드는 가로 48칸 격자다
 LAYOUT = [("ops-success-rate", 0, 0, 30, 12), ("ops-failed", 30, 0, 18, 12),
           ("ops-records", 0, 12, 24, 13), ("kafka-lag", 24, 12, 24, 13),
           ("airflow-runs", 0, 25, 24, 13), ("airflow-queue", 24, 25, 24, 13),
@@ -159,6 +170,7 @@ LAYOUT = [("ops-success-rate", 0, 0, 30, 12), ("ops-failed", 30, 0, 18, 12),
 
 
 def dashboard():
+    """패널들을 배치한 대시보드 저장 객체."""
     panels, refs = [], []
     types = {p["id"]: "lens" for p in PANELS} | {"logs-error-lines": "search"}
     for i, (pid, x, y, w, h) in enumerate(LAYOUT):
@@ -184,6 +196,7 @@ def dashboard():
 
 
 def data_views():
+    """데이터 뷰 저장 객체들."""
     for dv_id, (pattern, time_field, name) in DATA_VIEWS.items():
         yield {"id": dv_id, "type": "index-pattern", "managed": False, "coreMigrationVersion": VERSION,
                "typeMigrationVersion": "8.0.0",
@@ -191,6 +204,7 @@ def data_views():
 
 
 def main():
+    """모든 객체를 한 줄에 하나씩(NDJSON) 파일로 쓴다."""
     objects = [*data_views(), *PANELS, ERROR_SEARCH, dashboard()]
     OUT.write_text("".join(json.dumps(o, ensure_ascii=False) + "\n" for o in objects), encoding="utf-8")
     print(f"wrote {OUT} ({len(objects)} objects)")

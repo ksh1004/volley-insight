@@ -1,4 +1,5 @@
-"""Read-only admin views for reference data written by the Spark pipeline."""
+"""관리자 화면: Spark 파이프라인이 쓰는 기준 데이터(시즌, 대회, 팀, 선수)를 읽기 전용으로 보여 준다.
+고치려면 '데이터 보정' 화면을 쓴다(다음 정제 때 적용되어 다시 수집해도 유지됨)."""
 from django.contrib import admin
 
 from matches.admin import ReadOnlyAdmin

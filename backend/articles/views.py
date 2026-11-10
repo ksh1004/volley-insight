@@ -1,9 +1,9 @@
-"""Article list and search APIs (WEB-09, WEB-10, design.md 1.11).
+"""기사 목록과 검색 API(WEB-09, WEB-10, 설계서 1.11).
 
-  GET /api/articles?team=&player=&page=&page_size=   newest first, from PostgreSQL
-  GET /api/search?q=&page=                           teams, players and articles, from Elasticsearch
-  GET /api/search/suggest?q=                         up to 8 teams/players for the header autocomplete
-Articles link to the publisher's site; only title, summary and publisher are shown (NFR-06, WEB-14).
+  GET /api/articles?team=&player=&page=&page_size=   최신 기사부터, PostgreSQL에서
+  GET /api/search?q=&page=                           팀·선수·기사 통합 검색, Elasticsearch에서
+  GET /api/search/suggest?q=                         머리글 자동완성용 팀·선수 최대 8개
+기사는 언론사 사이트로 연결만 하고, 제목·요약·언론사만 보여 준다(NFR-06, WEB-14).
 """
 from django.db.models import Prefetch
 from rest_framework.exceptions import ValidationError
@@ -16,16 +16,19 @@ from league.models import Player, Team
 from . import search
 from .models import Article
 
-MAX_QUERY = 50
+MAX_QUERY = 50  # 검색어 최대 길이(아주 긴 입력으로 검색 엔진에 부담 주지 않게)
 
 
 class ArticlePagination(PageNumberPagination):
+    """기사 목록 페이지 나누기: 기본 20개, 최대 50개."""
+
     page_size = 20
     page_size_query_param = "page_size"
     max_page_size = 50
 
 
 def article_json(a: Article) -> dict:
+    """기사 하나의 응답 모양(검색 결과와 같은 모양으로 맞춤)."""
     return {"url": a.url, "title": a.title, "summary": a.summary, "publisher": a.publisher,
             "published_at": a.published_at, "source": a.source,
             "teams": [{"code": t.code, "name": t.name} for t in a.teams.all()],
@@ -33,6 +36,8 @@ def article_json(a: Article) -> dict:
 
 
 class ArticleListView(APIView):
+    """GET /api/articles: 기사 목록. team/player를 주면 그 팀·선수 태그가 붙은 기사만."""
+
     def get(self, request):
         qs = Article.objects.prefetch_related(Prefetch("teams", queryset=Team.objects.order_by("name")),
                                               Prefetch("players", queryset=Player.objects.order_by("name")))
@@ -47,16 +52,20 @@ class ArticleListView(APIView):
 
 
 def query_param(request) -> str:
+    """검색어 파라미터: 공백을 하나로 줄이고 최대 길이로 자른다. 비어 있으면 400."""
     q = " ".join((request.query_params.get("q") or "").split())
     if not q:
         raise ValidationError({"q": "검색어를 입력해 주세요"})
     return q[:MAX_QUERY]
 
 
+# 검색 엔진(Elasticsearch)이 응답하지 않을 때 보내는 안내(503)
 UNAVAILABLE = {"detail": "검색 서비스에 연결할 수 없어요. 잠시 후 다시 시도해 주세요."}
 
 
 class SearchView(APIView):
+    """GET /api/search: 통합 검색. 팀·선수는 첫 페이지에만, 기사는 페이지마다 10개씩."""
+
     def get(self, request):
         q = query_param(request)
         try:
@@ -72,6 +81,8 @@ class SearchView(APIView):
 
 
 class SuggestView(APIView):
+    """GET /api/search/suggest: 글자를 칠 때마다 부르는 자동완성. 검색어가 비면 빈 목록."""
+
     def get(self, request):
         q = (request.query_params.get("q") or "").strip()[:MAX_QUERY]
         if not q:

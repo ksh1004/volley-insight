@@ -1,11 +1,12 @@
 <script setup>
-// One match as a compact card: time, teams, sets (winner in bold + colour), set scores. Links to the match page.
+// 경기 하나를 작은 카드로: 시각, 두 팀, 세트 스코어(이긴 쪽은 굵게 + 색), 세트별 점수, (예정 경기면) 예측 승리 확률.
+// 누르면 경기 화면으로, 진행 중 경기면 실시간 화면으로 간다.
 import { computed } from 'vue'
 import WinProbBar from '@/components/WinProbBar.vue'
 import { GENDERS, STATUS } from '@/constants/volley'
 import { fmtDate, fmtTime } from '@/utils/format'
 
-// `favorite`: one of the viewer's favourite teams plays (WEB-12)
+// `favorite`: 보는 사람의 관심 팀이 뛰는 경기(테두리 강조, WEB-12). showDate: 시각 앞에 날짜도
 const props = defineProps({ match: { type: Object, required: true }, showDate: Boolean, favorite: Boolean })
 const m = computed(() => props.match)
 const done = computed(() => ['FINISHED', 'CONFIRMED'].includes(m.value.status))
@@ -13,7 +14,9 @@ const live = computed(() => m.value.status === 'LIVE')
 const homeWon = computed(() => done.value && m.value.home_sets > m.value.away_sets)
 const awayWon = computed(() => done.value && m.value.away_sets > m.value.home_sets)
 const when = computed(() => (props.showDate ? `${fmtDate(m.value.scheduled_at)} ${fmtTime(m.value.scheduled_at)}` : fmtTime(m.value.scheduled_at)))
+// 정규리그면 "3라운드", 포스트시즌이면 대회 이름
 const stage = computed(() => (m.value.league_code === '201' ? `${m.value.round}라운드` : m.value.competition))
+// 화면 낭독기용 카드 설명 한 문장(시각, 두 팀, 결과 또는 상태, 예측)
 const label = computed(() => {
   const score = done.value ? `${m.value.home_sets} 대 ${m.value.away_sets}, ${homeWon.value ? m.value.home.name : m.value.away.name} 승`
     : live.value ? `진행 중, 세트 스코어 ${m.value.home_sets} 대 ${m.value.away_sets}, 실시간 화면으로 이동` : STATUS[m.value.status]

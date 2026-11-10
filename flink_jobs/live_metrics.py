@@ -1,19 +1,19 @@
-"""live-metrics: live match state and per-set indicators from play-by-play events (PIPE-06, ANL-07, design.md 3.3).
+"""live-metrics: 문자중계 이벤트로 실시간 경기 상태와 세트별 지표를 계산한다(PIPE-06, ANL-07, 설계서 3.3).
 
-  Kafka kovo.live  ->  key by match  ->  score, sets, serve, run, set indicators, win probability (live_state.py)
-                   ->  PostgreSQL live_match_state / live_set_metric / live_rally (upsert)
-                   ->  Kafka live.metrics (key = match, e.g. 023-7)  ->  SSE gateway  ->  browser
+  Kafka kovo.live → 경기별로 묶기(key by) → 점수, 세트, 서브권, 연속 득점, 세트 지표, 승리 확률(live_state.py)
+                  → PostgreSQL live_match_state / live_set_metric / live_rally (upsert)
+                  → Kafka live.metrics (키 = 경기, 예: 023-7) → SSE 게이트웨이(django-sse) → 브라우저
 
-Input (collectors/collectors/live.py, replay.py): one message per poll or replayed rally,
-  payload = {match, set, start, events: [raw KOVO feed events], mode: LIVE|REPLAY, session}
-  `start` is the position of the first event in that set's feed, so repeats are recognised and dropped.
-State: one JSON dict per match (keyed ValueState, 12 h TTL). A message with another `session` (a new replay of
-the same match) starts over and clears that match's rows. Real live games also move match.status
-SCHEDULED -> LIVE -> FINISHED (design.md 4.5); replays never touch match.
-Restart: the Kafka position and the states are in the checkpoints (submit.sh restores the newest one). Writes are
-upserts, so messages replayed after a restart are harmless. The first start reads only new messages (latest).
+입력(collectors/collectors/live.py, replay.py가 보냄): 확인 한 번 또는 재생 랠리 하나당 메시지 하나,
+  payload = {match, set, start, events: [KOVO 원본 이벤트들], mode: LIVE|REPLAY, session}
+  `start`는 첫 이벤트가 그 세트 목록에서 몇 번째인지라서, 이미 본 이벤트를 알아보고 버릴 수 있다.
+상태: 경기마다 JSON 딕셔너리 하나(keyed ValueState, 12시간 TTL). `session`이 다른 메시지(같은 경기의 새 재생)가
+오면 처음부터 다시 계산하고 그 경기의 행들을 지운다. 실제 경기만 match.status를 SCHEDULED → LIVE → FINISHED로
+옮긴다(설계서 4.5). 재생은 match 테이블을 절대 건드리지 않는다.
+재시작: Kafka 위치와 상태는 체크포인트에 있다(submit.sh가 가장 최근 것에서 복원). 저장이 upsert라서 재시작 뒤
+다시 처리되는 메시지도 문제없다. 처음 시작할 때는 새 메시지부터만 읽는다(latest).
 
-Run (stream profile; flink-job-keeper keeps it submitted):
+실행(stream 프로필. flink-job-keeper가 계속 제출 상태를 유지한다):
   docker compose exec flink-jobmanager sh /opt/flink/usrlib/jobs/submit.sh live_metrics.py live-metrics
 """
 import json
@@ -30,17 +30,19 @@ from pyflink.table import StreamTableEnvironment
 
 JOBS_DIR = os.environ.get("JOBS_DIR", "/opt/flink/usrlib/jobs")
 KAFKA = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
-STATE_HOURS = 12
-# league averages (2025-26 regular season) when a team has no season summary yet
-DEFAULT_RATES = {"M": (0.692, 0.308), "F": (0.609, 0.390)}  # (side-out, break)
-PRIOR_MATCHES = 5  # this season's rates count fully after about this many matches
+STATE_HOURS = 12  # 경기 상태를 기억하는 시간(마지막 갱신 후)
+# 팀의 시즌 기록이 아직 없을 때 쓰는 리그 평균(2025-26 정규리그). 성별 → (사이드아웃률, 브레이크율)
+DEFAULT_RATES = {"M": (0.692, 0.308), "F": (0.609, 0.390)}
+PRIOR_MATCHES = 5  # 이번 시즌 기록은 대략 이만큼 경기를 치른 뒤부터 온전히 믿는다(그 전에는 지난 시즌 쪽으로 당김)
 
 
 def now_iso():
+    """지금 시각(UTC, 밀리초까지). 메시지에 처리 시각을 남겨 지연을 잴 때 쓴다."""
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def pg_connect():
+    """서비스 DB(PostgreSQL) 접속."""
     import psycopg2
 
     return psycopg2.connect(host=os.environ.get("POSTGRES_HOST", "postgres"), port=os.environ.get("POSTGRES_PORT", "5432"),
@@ -49,7 +51,8 @@ def pg_connect():
 
 
 def parse(line: str):
-    """Envelope -> flat batch JSON (None for anything malformed)."""
+    """수집기 봉투를 처리하기 쉬운 납작한 JSON으로 바꾼다. 형식이 잘못됐거나 mode가 LIVE/REPLAY가 아니면 None.
+    홈/원정 팀 코드는 봉투의 요청 파라미터(hcode/acode)에서 꺼낸다."""
     try:
         env = json.loads(line)
         p = env["payload"]
@@ -63,10 +66,12 @@ def parse(line: str):
         return None
 
 
+# 경기의 성별(리그 평균 기본값을 고르기 위해)
 MATCH_SQL = """
     SELECT m.gender FROM match m JOIN competition c ON c.id = m.competition_id JOIN season s ON s.id = c.season_id
     WHERE s.code = %s AND m.game_no = %s
 """
+# 두 팀의 시즌별 사이드아웃률·브레이크율(정규리그, 이번 시즌 이하, 최신 시즌부터). DB는 %라서 100으로 나눈다
 RATES_SQL = """
     SELECT t.code, s.code, tss.matches, tss.sideout_rate::float8 / 100, tss.break_rate::float8 / 100
     FROM team_season_summary tss JOIN team t ON t.id = tss.team_id
@@ -78,8 +83,8 @@ RATES_SQL = """
 
 
 def team_rates(rows, team, season, default):
-    """(side-out, break) of one team: this season's, shrunk toward last season's (or the league average) while
-    only a few matches are played."""
+    """한 팀의 (사이드아웃률, 브레이크율). 이번 시즌 기록을 쓰되, 경기 수가 적으면 지난 시즌(없으면 리그 평균)
+    쪽으로 당긴다: 가중치 w = 경기수 / (경기수 + PRIOR_MATCHES). 예) 5경기면 이번 시즌 50% + 이전 50%."""
     cur = next(((n, so, br) for code, s, n, so, br in rows if code == team and s == season), None)
     prev = next(((so, br) for code, s, n, so, br in rows if code == team and s < season), None) or default
     if cur is None:
@@ -90,7 +95,7 @@ def team_rates(rows, team, season, default):
 
 
 def match_rates(conn, batch):
-    """Rates of both teams for the win probability, None if the match is unknown."""
+    """승리 확률 계산에 쓸 두 팀의 기록(live_state.rally_probs가 읽는 모양). DB에 없는 경기면 None."""
     with conn.cursor() as cur:
         cur.execute(MATCH_SQL, (batch["season"], batch["gnum"]))
         row = cur.fetchone()
@@ -106,7 +111,7 @@ def match_rates(conn, batch):
 
 
 class Follow(KeyedProcessFunction):
-    """Keeps each match's state and applies every batch of events to it."""
+    """경기마다 상태를 들고 있다가, 이벤트 묶음이 올 때마다 반영하고 바뀐 내용을 내보낸다."""
 
     def open(self, ctx: RuntimeContext):
         desc = ValueStateDescriptor("match", Types.STRING())
@@ -118,31 +123,33 @@ class Follow(KeyedProcessFunction):
         self.conn = None
 
     def _rates(self, batch):
+        """두 팀 기록을 DB에서 읽는다. 실패해도 경기 점수 중계는 계속돼야 하므로 None(확률만 없음)을 돌려준다."""
         try:
             if self.conn is None or self.conn.closed:
                 self.conn = pg_connect()
             with self.conn:
                 return match_rates(self.conn, batch)
-        except Exception as exc:  # no win probability rather than no live score
+        except Exception as exc:  # 점수 중계가 멈추는 것보다 확률이 빠지는 편이 낫다
             print(f"live-metrics: rates unavailable for {batch['match']}: {exc}")
             if self.conn is not None:
                 self.conn.close()
             return None
 
     def process_element(self, value, ctx):
-        from live_state import apply_batch, new_state, summary
+        """묶음 하나 처리: 상태 읽기 → (새 세션이면 초기화) → 이벤트 반영 → 바뀐 게 있으면 상태 저장·update 메시지 출력."""
+        from live_state import apply_batch, new_state, summary  # TaskManager에서 import(add_python_file로 배포)
 
         batch = json.loads(value)
         raw = self.state.value()
         st = json.loads(raw) if raw else None
-        reset = st is None or st["session"] != batch["session"]
+        reset = st is None or st["session"] != batch["session"]  # 처음 보는 경기 또는 새 재생 세션
         if reset:
             st = new_state(batch["match"], batch["home"], batch["away"], batch["mode"], batch["session"],
                            self._rates(batch))
         before = st["last_seq"]
         points = apply_batch(st, batch["set"], batch["start"], batch["events"])
         if not reset and st["last_seq"] == before:
-            return  # nothing new
+            return  # 새로운 것이 없다(전부 이미 반영한 이벤트)
         self.state.update(json.dumps(st, ensure_ascii=False))
         yield json.dumps({"type": "update", "reset": reset, "state": summary(st), "points": points,
                           "fetched_at": batch["fetched_at"], "processed_at": now_iso()}, ensure_ascii=False)
@@ -152,6 +159,7 @@ class Follow(KeyedProcessFunction):
             self.conn.close()
 
 
+# 경기 상태 한 행(경기당 1행). reset이면 시작 시각을 새로 찍고, 끝나면 종료 시각을 한 번만 기록한다
 STATE_UPSERT = """
     INSERT INTO live_match_state (match_id, mode, session, status, current_set, home_points, away_points, home_sets,
         away_sets, set_scores, serving_team_id, home_run, away_run, home_set_win_prob, home_win_prob, last_play,
@@ -171,6 +179,7 @@ STATE_UPSERT = """
                            THEN coalesce(live_match_state.finished_at, now()) END,
         updated_at = now()
 """
+# 세트·팀별 지표 한 행(공격 시도·성공, 서브 에이스·범실, 블로킹, 범실)
 METRIC_UPSERT = """
     INSERT INTO live_set_metric (match_id, set_no, team_id, points, attack_attempts, attack_success,
         attack_success_rate, serve_aces, serve_errors, block_points, errors)
@@ -182,6 +191,7 @@ METRIC_UPSERT = """
         serve_errors = EXCLUDED.serve_errors, block_points = EXCLUDED.block_points, errors = EXCLUDED.errors,
         updated_at = now()
 """
+# 득점 하나 = 한 행(점수 흐름 차트와 득점 피드). 같은 득점이 원인 선수가 채워지며 다시 오면 갱신된다
 RALLY_UPSERT = """
     INSERT INTO live_rally (match_id, set_no, point_no, rally_no, seq, home_score, away_score, winner_team_id,
         server_team_id, kind, player_id, player_name, action_code, result_code)
@@ -194,6 +204,7 @@ RALLY_UPSERT = """
         player_name = EXCLUDED.player_name, action_code = EXCLUDED.action_code, result_code = EXCLUDED.result_code,
         updated_at = now()
 """
+# 경기 키(시즌, 경기번호) → DB의 match.id
 MATCH_ID_SQL = """
     SELECT m.id FROM match m JOIN competition c ON c.id = m.competition_id JOIN season s ON s.id = c.season_id
     WHERE s.code = %s AND m.game_no = %s
@@ -201,17 +212,20 @@ MATCH_ID_SQL = """
 
 
 class Store(MapFunction):
-    """Upserts one update into PostgreSQL (one transaction) and returns Row(match key, live.metrics message)."""
+    """update 하나를 PostgreSQL에 upsert 하고(한 트랜잭션), Row(경기 키, live.metrics 메시지)를 돌려준다."""
 
     def open(self, ctx: RuntimeContext):
+        # DB id는 거의 바뀌지 않으므로 한 번 찾은 값을 기억해 둔다(경기 키 → match.id, 팀 코드 → team.id)
         self.conn, self.match_ids, self.team_ids = None, {}, {}
 
     def _pg(self):
+        """열린 DB 연결(끊겼으면 다시 연다)."""
         if self.conn is None or self.conn.closed:
             self.conn = pg_connect()
         return self.conn
 
     def _ids(self, cur, s):
+        """경기와 두 팀의 DB id를 찾아 캐시에 채우고 match.id를 돌려준다(DB에 없는 경기면 None)."""
         key = s["match"]
         if key not in self.match_ids:
             season, gnum = key.split("-")
@@ -226,7 +240,8 @@ class Store(MapFunction):
         return self.match_ids[key]
 
     def map(self, value):
-        from psycopg2.extras import Json
+        """상태·세트 지표·득점을 저장한다. 새 세션(reset)이면 그 경기의 이전 득점·지표 행을 먼저 지운다."""
+        from psycopg2.extras import Json  # 파이썬 객체를 jsonb 칸에 넣기 위한 래퍼
 
         msg = json.loads(value)
         s, reset = msg["state"], msg["reset"]
@@ -235,7 +250,7 @@ class Store(MapFunction):
             with conn, conn.cursor() as cur:
                 match_id = self._ids(cur, s)
                 if match_id is None:
-                    return Row(s["match"], None)  # not in the serving DB (yet): nothing to store or show
+                    return Row(s["match"], None)  # 서비스 DB에 (아직) 없는 경기: 저장할 것도 보여 줄 것도 없음
                 tid = self.team_ids.get
                 if reset:
                     cur.execute("DELETE FROM live_rally WHERE match_id = %s", (match_id,))
@@ -248,7 +263,7 @@ class Store(MapFunction):
                 for p in msg["points"]:
                     cur.execute(RALLY_UPSERT, {**p, "match_id": match_id, "winner_id": tid(p["winner"]),
                                                "server_id": tid(p["server"])})
-                if s["mode"] == "LIVE":  # design.md 4.5: the live pipeline moves a real game to LIVE and FINISHED
+                if s["mode"] == "LIVE":  # 설계서 4.5: 실제 경기만 실시간 경로가 상태를 LIVE, FINISHED로 옮긴다
                     if s["status"] == "FINISHED":
                         cur.execute("UPDATE match SET status = 'FINISHED', home_sets = %s, away_sets = %s, updated_at = now() "
                                     "WHERE id = %s AND status IN ('SCHEDULED', 'LIVE')",
@@ -258,7 +273,7 @@ class Store(MapFunction):
                                     "WHERE id = %s AND status IN ('SCHEDULED', 'LIVE')",
                                     (s["home_sets"], s["away_sets"], match_id))
         except Exception:
-            conn.close()  # reconnect on the next element (the job restarts and replays this one)
+            conn.close()  # 다음 요소에서 다시 연결한다(작업이 재시작되며 이 요소를 다시 처리함)
             raise
         msg["stored_at"] = now_iso()
         return Row(s["match"], json.dumps(msg, ensure_ascii=False))
@@ -269,6 +284,7 @@ class Store(MapFunction):
 
 
 def log_line(row):
+    """저장한 update 하나를 로그 한 줄로(TaskManager 로그 → Filebeat → Kibana). 수집·저장 시각으로 지연을 볼 수 있다."""
     msg = json.loads(row[1])
     s = msg["state"]
     prob = s["home_win_prob"]
@@ -278,23 +294,25 @@ def log_line(row):
 
 
 def main():
+    """작업 구성: Kafka → 파싱 → 유효성 → 경기별 상태 반영 → DB 저장 → (로그 출력, live.metrics 발행)."""
     config = Configuration()
     config.set_string("pipeline.name", "live-metrics")
     config.set_string("execution.checkpointing.interval", "30 s")
     config.set_string("state.checkpoints.dir", "hdfs://namenode:9000/flink/checkpoints/live-metrics")
     config.set_string("execution.checkpointing.externalized-checkpoint-retention", "RETAIN_ON_CANCELLATION")
     env = StreamExecutionEnvironment.get_execution_environment(config)
-    env.add_python_file(os.path.join(JOBS_DIR, "live_state.py"))
-    t_env = StreamTableEnvironment.create(env)
+    env.add_python_file(os.path.join(JOBS_DIR, "live_state.py"))  # TaskManager에도 이 파일을 보낸다
+    t_env = StreamTableEnvironment.create(env)  # Kafka에 키를 붙여 쓰기 위해 Table API도 함께 쓴다
 
     source = (KafkaSource.builder()
               .set_bootstrap_servers(KAFKA)
               .set_topics("kovo.live")
               .set_group_id("live-metrics")
-              # requirements 2.5: live processing starts from the newest data
+              # 요구사항 2.5: 실시간 처리는 가장 새 데이터부터 시작한다(지난 메시지를 몰아서 처리하지 않음)
               .set_starting_offsets(KafkaOffsetsInitializer.committed_offsets(KafkaOffsetResetStrategy.LATEST))
               .set_value_only_deserializer(SimpleStringSchema())
               .build())
+    # 출력 행: (k = 경기 키, v = live.metrics 메시지 JSON)
     out_type = Types.ROW_NAMED(["k", "v"], [Types.STRING(), Types.STRING()])
     stored = (env.from_source(source, WatermarkStrategy.no_watermarks(), "kovo.live")
               .map(parse, output_type=Types.STRING()).name("parse")
@@ -305,7 +323,8 @@ def main():
               .filter(lambda r: r[1] is not None).name("known-match"))
     stored.map(log_line, output_type=Types.STRING()).name("log").print()
 
-    # the SQL Kafka connector writes the match as the message key (DataStream KafkaSink cannot set a key here)
+    # SQL Kafka 커넥터로 경기 키를 메시지 키로 붙여 쓴다(여기서는 DataStream KafkaSink로 키를 지정할 수 없어서)
+    # 같은 경기 메시지가 같은 파티션으로 가야 SSE 게이트웨이가 순서대로 받는다
     t_env.execute_sql(f"""
         CREATE TABLE live_metrics_out (`k` STRING, `v` STRING) WITH (
             'connector' = 'kafka', 'topic' = 'live.metrics', 'properties.bootstrap.servers' = '{KAFKA}',

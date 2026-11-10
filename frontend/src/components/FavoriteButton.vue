@@ -1,13 +1,13 @@
 <script setup>
-// WEB-12: follow a team or player. Signed out, it leads to login and comes back to this page.
-// Motion: adding a favourite makes the star pop with a small burst; removing it just empties the star.
+// WEB-12: 팀이나 선수를 관심 등록하는 별 버튼. 로그인하지 않았으면 로그인 화면으로 보냈다가 이 화면으로 돌아온다.
+// 모션: 추가하면 별이 톡 튀며 작은 불꽃이 퍼지고, 해제하면 별이 비워지기만 한다.
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useFlash } from '@/motion/core'
 import { useAuthStore } from '@/stores/auth'
 
 const props = defineProps({
-  kind: { type: String, required: true }, // team | player
+  kind: { type: String, required: true }, // 'team' | 'player'
   code: { type: String, required: true },
   name: { type: String, default: '' },
 })
@@ -15,13 +15,14 @@ const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 const busy = ref(false)
-const message = ref('') // read out by screen readers
+const message = ref('') // 화면 낭독기가 읽는 결과 안내(aria-live)
 const error = ref('')
 
 const on = computed(() => auth.isFavorite(props.kind, props.code))
 const noun = computed(() => (props.kind === 'team' ? '관심 팀' : '관심 선수'))
-const { flash: burst, pulse } = useFlash(700)
+const { flash: burst, pulse } = useFlash(700) // 불꽃 효과(0.7초)
 
+// 누르면: 로그인 확인 → 추가/해제 요청 → 결과 안내(실패하면 오류 문구)
 async function toggle() {
   if (!auth.isLoggedIn) {
     router.push({ path: '/login', query: { next: route.fullPath } })

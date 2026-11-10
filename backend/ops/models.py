@@ -1,9 +1,9 @@
-"""Data quality issues (PIPE-10) and manual data corrections (ADM-03).
+"""데이터 운영 모델: 품질 문제(PIPE-10), 데이터 보정(ADM-03), 작업 실패 알림(PIPE-09), 수동 실행 기록(ADM-02).
 
-QualityIssue rows are written by the curation job (spark_jobs/curate_kovo.py -> sql/merge_kovo.sql), not by the
-web app. An admin only changes their status (acknowledge a gap in KOVO's own data, reopen).
-Correction rows are written by admins in Django admin. The curation job applies every active correction to the
-curated data before its checks, so a correction survives re-collection and also reaches the marts.
+QualityIssue 행은 웹 앱이 아니라 정제 작업(spark_jobs/curate_kovo.py → sql/merge_kovo.sql)이 쓴다. 관리자는
+상태만 바꾼다(KOVO 자체 데이터의 빈틈을 '확인함'으로, 또는 다시 열기).
+Correction 행은 관리자가 Django 관리자 화면에서 쓴다. 정제 작업은 검사 전에 켜진 보정을 모두 정제 데이터에
+적용하므로, 다시 수집해도 보정이 살아남고 분석 마트에도 반영된다.
 """
 from django.conf import settings
 from django.db import models
@@ -13,8 +13,11 @@ from matches.models import Match
 
 
 class QualityIssue(models.Model):
+    """품질 검사에 걸린 문제 하나(시즌, 경기, 세트, 규칙, 대상으로 유일)."""
+
     class Rule(models.TextChoices):
-        # ERROR: the match stays FINISHED (not CONFIRMED) until it is fixed
+        """검사 규칙. 위쪽 7개는 ERROR, 아래 4개는 WARNING이다."""
+        # ERROR: 고칠 때까지 경기가 CONFIRMED가 되지 못하고 FINISHED에 머문다
         SET_COUNT_MISMATCH = "SET_COUNT_MISMATCH", "세트 스코어와 세트별 점수 불일치"
         MISSING_BOX_SCORE = "MISSING_BOX_SCORE", "선수 기록 없음"
         MISSING_RALLY = "MISSING_RALLY", "문자중계 없음"
@@ -22,24 +25,26 @@ class QualityIssue(models.Model):
         INVALID_SET_SCORE = "INVALID_SET_SCORE", "세트 점수가 경기 규칙에 맞지 않음"
         STAT_RANGE = "STAT_RANGE", "기록 범위 오류(성공이 시도보다 많음 등)"
         MISSING_VALUE = "MISSING_VALUE", "필수 값 누락"
-        # WARNING: shown to admins, the match can still be CONFIRMED
+        # WARNING: 관리자에게 보여 주기만 하고, 경기는 CONFIRMED가 될 수 있다
         BOX_SCORE_MISMATCH = "BOX_SCORE_MISMATCH", "팀 합계와 선수 합 불일치"
         POINTS_MISMATCH = "POINTS_MISMATCH", "팀 득점과 세트 점수 합 불일치"
         PLAYER_POINTS_MISMATCH = "PLAYER_POINTS_MISMATCH", "선수 득점과 공격·블로킹·서브 합 불일치"
         PLAYER_NAME_MISSING = "PLAYER_NAME_MISSING", "선수 이름 없음"
 
     class Severity(models.TextChoices):
+        """심각도."""
         ERROR = "ERROR", "오류"
         WARNING = "WARNING", "경고"
 
     class Status(models.TextChoices):
+        """처리 상태."""
         OPEN = "OPEN", "미해결"
-        ACKNOWLEDGED = "ACKNOWLEDGED", "확인함"   # e.g. KOVO itself has no data; the next runs keep this status
-        RESOLVED = "RESOLVED", "해결됨"           # no longer found by the last run of its season
+        ACKNOWLEDGED = "ACKNOWLEDGED", "확인함"   # 예: KOVO에도 데이터가 없음. 이후 실행도 이 상태를 유지한다
+        RESOLVED = "RESOLVED", "해결됨"           # 그 시즌의 마지막 실행에서 더는 발견되지 않음
 
     season_code = models.CharField("시즌", max_length=3)
     game_no = models.PositiveIntegerField("경기 번호")
-    # null only when the match itself could not be loaded (e.g. a missing team code)
+    # 경기 자체를 적재하지 못했을 때만 비어 있다(예: 팀 코드 누락)
     match = models.ForeignKey(Match, on_delete=models.CASCADE, null=True, blank=True, related_name="quality_issues",
                               verbose_name="경기")
     set_no = models.PositiveSmallIntegerField("세트", default=0, help_text="0 = 경기 전체")
@@ -69,9 +74,11 @@ class QualityIssue(models.Model):
 
 
 class Correction(models.Model):
-    """One field of one curated row, set by an admin. See ops/corrections.py for targets, keys and fields."""
+    """관리자가 정한, 정제 데이터 한 행의 필드 하나의 고친 값. 대상·키·항목 규칙은 ops/corrections.py.
+    같은 (대상, 키, 항목)에 켜진 보정은 하나만 있을 수 있다(조건부 유일 제약)."""
 
     class Target(models.TextChoices):
+        """보정할 수 있는 대상(테이블)."""
         PLAYER = "player", "선수"
         TEAM = "team", "팀"
         MATCH = "match", "경기"
@@ -104,16 +111,18 @@ class Correction(models.Model):
         return f"{self.get_target_display()} {self.key} {self.field} = {self.value!r}"
 
     def clean(self):
+        """관리자 양식 저장 전 검사(키가 실제 기록을 가리키는지, 값 형식이 맞는지 등)."""
         from .corrections import validate
 
         validate(self)
 
 
 class JobAlert(models.Model):
-    """A pipeline job that failed for good (PIPE-09). Written by the Airflow failure callbacks
-    (airflow/dags/kovo_tasks/alerts.py), not by the web app; an admin marks it checked."""
+    """재시도를 다 쓰고 최종 실패한 파이프라인 작업(PIPE-09). 웹 앱이 아니라 Airflow 실패 콜백
+    (airflow/dags/kovo_tasks/alerts.py)이 쓰고, 관리자는 '확인함'으로 표시만 한다."""
 
     class Status(models.TextChoices):
+        """확인 상태."""
         OPEN = "OPEN", "미확인"
         ACKNOWLEDGED = "ACKNOWLEDGED", "확인함"
 
@@ -147,7 +156,8 @@ class JobAlert(models.Model):
 
 
 class ManualRun(models.Model):
-    """A pipeline job started from the admin page (ADM-02). The run itself lives in Airflow."""
+    """관리자 화면에서 시작한 파이프라인 작업 기록(ADM-02). 실행 자체는 Airflow에 있고, 여기에는 누가 무엇을 언제
+    요청했는지와 Airflow 실행 id만 남긴다."""
 
     dag_id = models.CharField("작업(DAG)", max_length=100)
     conf = models.JSONField("설정", default=dict, blank=True)

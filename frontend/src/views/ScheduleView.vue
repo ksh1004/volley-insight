@@ -1,9 +1,9 @@
 <script setup>
-// WEB-02: schedule and results by month, with season / division / team filters.
-// Motion: the month highlight slides; a new month's days rise in while the old list stays (dimmed) until it arrives;
-// "오늘 경기로" scrolls to today's games when they are in the list.
-// Two views of the month (WEB-02 "월별 캘린더/목록"): list = day groups packed in a grid; calendar = month grid
-// (ScheduleCalendar). The view is kept in the address (?view=calendar) so a shared link opens the same view.
+// WEB-02 일정 화면: 달별 일정과 결과, 시즌·남녀부·팀 필터.
+// 모션: 달 선택 강조가 미끄러지고, 새 달 목록이 도착할 때까지 이전 목록을 흐리게 남겨 두었다가 새 날짜들이 떠오르며
+// 나타난다. "오늘 경기로" 버튼은 목록에 오늘 경기가 있으면 그곳으로 스크롤한다.
+// 보기 두 가지(WEB-02 "월별 캘린더/목록"): 목록 = 날짜별 묶음을 격자로, 달력 = 월 달력(ScheduleCalendar).
+// 보기 방식은 주소(?view=calendar)에 담아, 링크를 공유하면 같은 보기로 열린다.
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import ScheduleCalendar from '@/components/ScheduleCalendar.vue'
@@ -16,16 +16,18 @@ import { useFiltersStore } from '@/stores/filters'
 import { dayKey, fmtDate, seasonMonths, todayKst } from '@/utils/format'
 
 const filters = useFiltersStore()
+// 시즌의 달 목록(달 선택 탭)
 const months = computed(() => seasonMonths(filters.current?.start_date, filters.current?.end_date))
 const month = ref('')
 const team = ref('')
 const teams = ref([])
 const matches = ref([])
 const state = ref({ loading: true, error: null })
-const listKey = ref('') // changes when a new list has arrived, so it enters as a whole
+const listKey = ref('') // 새 목록이 도착하면 바뀌는 키: 목록 전체가 한꺼번에 새로 들어오는 효과를 위해
 const route = useRoute()
 const view = ref(route.query.view === 'calendar' ? 'calendar' : 'list')
-// the address changes in place: a router navigation would remount the page (App.vue keys pages by full path)
+// 주소만 제자리에서 바꾼다(history.replaceState): 라우터로 이동하면 화면이 통째로 다시 만들어진다
+// (App.vue가 전체 주소를 화면의 키로 쓰기 때문). 그러면 스크롤·애니메이션이 처음부터 다시 시작된다
 watch(view, (v) => {
   const url = new URL(window.location.href)
   if (v === 'calendar') url.searchParams.set('view', 'calendar')
@@ -33,17 +35,19 @@ watch(view, (v) => {
   window.history.replaceState(window.history.state, '', url)
 })
 
+// 기본 달: 이번 달이 시즌 안이면 이번 달, 아니면 시즌 첫 달
 function defaultMonth() {
   const now = todayKst().slice(0, 7)
   return months.value.includes(now) ? now : months.value[0] || ''
 }
 
+// 팀 필터 목록(시즌·남녀부가 바뀌면 다시). 고른 팀이 목록에 없으면 필터를 푼다
 async function loadTeams() {
   teams.value = await getTeams({ season: filters.season, gender: filters.gender })
   if (!teams.value.some((t) => t.code === team.value)) team.value = ''
 }
 
-let requestNo = 0 // filters can change quickly; only the latest response is shown
+let requestNo = 0 // 필터를 빠르게 여러 번 바꿀 수 있으므로, 가장 마지막 요청의 응답만 화면에 반영한다
 async function load() {
   const mine = ++requestNo
   state.value = { loading: true, error: null }
@@ -61,6 +65,7 @@ async function load() {
   }
 }
 
+// 경기를 날짜별로 묶는다(서버가 시각순으로 주므로 앞에서부터 이어 붙이면 됨)
 const byDay = computed(() => {
   const groups = []
   for (const m of matches.value) {
@@ -71,9 +76,11 @@ const byDay = computed(() => {
   return groups
 })
 
+// '오늘 경기로' 버튼: 목록 보기이고 오늘 경기가 있을 때만
 const todayKey = dayKey(new Date().toISOString())
 const hasToday = computed(() => view.value === 'list' && byDay.value.some((g) => g.key === todayKey))
 const todayDate = todayKst()
+// 오늘 날짜 묶음으로 스크롤하고 포커스(키보드 사용자도 바로 이어서 읽을 수 있게)
 async function goToday() {
   await nextTick()
   const el = document.getElementById('day-today')
@@ -87,6 +94,7 @@ onMounted(async () => {
   await loadTeams()
   await load()
 })
+// 시즌이 바뀌면 기본 달로, 남녀부만 바뀌면 달은 그대로. 팀 목록과 경기를 다시 불러온다
 watch(() => [filters.season, filters.gender], async ([season], [oldSeason]) => {
   if (season !== oldSeason) month.value = defaultMonth()
   await loadTeams()

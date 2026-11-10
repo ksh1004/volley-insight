@@ -1,26 +1,26 @@
 <script setup>
-// Lead over one set, from play-by-play: above the centre line the home team leads, below the away team.
-// Chart guidance (ui-ux-pro-max, "Trend Over Time"): hover/keyboard reveals the score at each point,
-// and a sentence summary (lead changes, longest run) gives the same information without the chart.
-// Interaction: the summary facts are linked to the chart; pointing at (or focusing) one marks it on the chart
-// (the run as a band, the biggest lead as a ring, lead changes as ticks on the centre line).
-// Motion: the line draws in from the left when first seen; during a live game new points extend it smoothly.
+// 한 세트의 점수 차 흐름(문자중계로): 가운데 선 위면 홈이 앞섬, 아래면 원정이 앞섬. 경기 화면과 실시간 화면에서 쓴다.
+// 차트 지침(ui-ux-pro-max "시간에 따른 추세"): 마우스/키보드로 각 시점의 점수를 읽을 수 있고, 같은 내용을 문장 요약
+// (역전 횟수, 최다 점수 차, 최장 연속 득점)으로도 제공해 차트 없이도 이해할 수 있게 한다.
+// 상호작용: 요약 문장이 차트와 연결돼 있어, 하나를 가리키거나 포커스하면 차트에 표시된다
+// (연속 득점은 띠, 최다 점수 차는 동그라미, 역전은 가운데 선의 눈금).
+// 모션: 처음 보일 때 선이 왼쪽부터 그려지고, 실시간 경기 중에는 새 점이 부드럽게 이어 붙는다.
 import { computed, ref, useId } from 'vue'
 import { DURATION, ease, useInView, useTween } from '@/motion/core'
 
 const props = defineProps({
-  events: { type: Array, required: true }, // rally events with grade, home_score, away_score
+  events: { type: Array, required: true }, // 문자중계 이벤트(grade, home_score, away_score 포함)
   home: { type: String, required: true },
   away: { type: String, required: true },
-  live: Boolean, // the set is still being played: mark the newest point
+  live: Boolean, // 아직 진행 중인 세트: 가장 새 점을 깜빡이며 표시
 })
 
-const uid = useId() // unique clip-path ids when several charts are on one page
-const W = 600
-const H = 170
-const TOP = 10
+const uid = useId() // 한 화면에 차트가 여러 개일 때 SVG clip-path id가 겹치지 않게
+const W = 600 // SVG 좌표 폭
+const H = 170 // SVG 좌표 높이
+const TOP = 10 // 위아래 여백
 
-// one point per scored rally
+// 득점 하나당 점 하나(by: 그 점수를 딴 쪽). 0:0에서 시작
 const points = computed(() => {
   const out = [{ h: 0, a: 0, by: null }]
   for (const e of props.events) {
@@ -31,9 +31,10 @@ const points = computed(() => {
   return out
 })
 const n = computed(() => points.value.length - 1)
+// 세로 눈금의 최대 점수 차(최소 4점)
 const maxLead = computed(() => Math.max(4, ...points.value.map((p) => Math.abs(p.h - p.a))))
 
-// scales follow the data smoothly: a new point squeezes the line instead of jumping
+// 눈금도 부드럽게 따라간다: 새 점이 오면 선이 튀지 않고 살짝 눌리며 자리를 만든다
 const span = useTween(() => Math.max(1, n.value), { duration: DURATION.slow, easing: ease.inOut })
 const lead = useTween(() => maxLead.value, { duration: DURATION.slow, easing: ease.inOut })
 const mid = H / 2
@@ -42,16 +43,20 @@ const y = (d) => mid - (d / lead.value) * (mid - TOP)
 const yPct = (d) => `${(y(d) / H) * 100}%`
 const xPct = (i) => `${(x(i) / W) * 100}%`
 
+// 계단 모양 선(득점할 때마다 가로로 한 칸, 세로로 점수 차만큼)
 const path = computed(() => {
   const p = points.value
   let d = `M 0 ${y(0)}`
   for (let i = 1; i < p.length; i++) d += ` H ${x(i)} V ${y(p[i].h - p[i].a)}`
   return d
 })
+// 선과 가운데 선 사이를 채우는 영역(위/아래를 홈/원정 색으로 잘라 그림)
 const area = computed(() => `${path.value} H ${x(n.value)} V ${mid} H 0 Z`)
+// 보조 가로선(5점, 10점 차)
 const grid = computed(() => [5, 10].filter((v) => v < maxLead.value))
 const final = computed(() => points.value[points.value.length - 1])
 
+// 요약: 역전 횟수와 위치, 최다 점수 차, 최장 연속 득점(차트와 같은 정보를 문장으로)
 const summary = computed(() => {
   const p = points.value
   const changeAt = []
@@ -82,7 +87,7 @@ const summary = computed(() => {
   }
 })
 
-// readout: pointer position or arrow keys
+// 값 읽기: 마우스 위치 또는 화살표 키로 고른 점
 const active = ref(null)
 const shown = computed(() => (active.value == null ? null : points.value[active.value]))
 function onMove(e) {
@@ -96,13 +101,13 @@ function onKey(e) {
   const base = active.value ?? (moves[e.key] > 0 ? 0 : n.value)
   active.value = Math.min(n.value, Math.max(0, base + moves[e.key]))
 }
-// the readout stays inside the chart near both edges
+// 값 말풍선이 양 끝에서 차트 밖으로 나가지 않게 12~88%로 제한
 const readoutLeft = computed(() => `${Math.min(88, Math.max(12, (x(active.value) / W) * 100))}%`)
 
-// which summary fact is pointed at: run | biggest | changes
+// 가리킨 요약 항목: 'run'(연속 득점) | 'biggest'(최다 점수 차) | 'changes'(역전)
 const focus = ref(null)
 
-// draw-in once visible
+// 처음 보일 때 선 그리기(진행률 0→1)
 const plot = ref(null)
 const seen = useInView(plot)
 const drawn = useTween(() => (seen.value ? 1 : 0), { duration: DURATION.chart, easing: ease.inOut, from: 0 })

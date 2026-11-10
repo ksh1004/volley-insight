@@ -1,7 +1,7 @@
 <script setup>
-// Two values per row as opposing bars (home vs away, or team vs league average).
-// Motion: bars grow out from the labels the first time they are seen and resize smoothly when the values change
-// (e.g. switching set / whole match), using transform only.
+// 한 줄에 두 값을 마주 보는 막대로 비교(홈 vs 원정, 또는 팀 vs 리그 평균). 더 나은 쪽은 굵게 표시.
+// 모션: 처음 보일 때 막대가 이름표 쪽에서 자라나고, 값이 바뀌면(세트 ↔ 경기 전체 전환 등) 부드럽게 길이가 바뀐다.
+// transform(scaleX)만 써서 레이아웃을 다시 계산하지 않는다(가볍고 부드러움).
 import { ref } from 'vue'
 import { useInView } from '@/motion/core'
 
@@ -11,19 +11,22 @@ defineProps({
   rows: { type: Array, required: true }, // [{ label, a, b, fmt?: (v) => string, lowerIsBetter?: bool }]
   aLabel: { type: String, required: true },
   bLabel: { type: String, required: true },
-  bMuted: Boolean, // grey right side (e.g. league average)
+  bMuted: Boolean, // 오른쪽을 회색으로(예: 리그 평균일 때)
 })
 
+// 막대 길이: 두 값 중 큰 쪽을 1로 본 비율(아직 안 보였으면 0, 아주 작은 값도 최소 2%는 보이게)
 const scale = (v, a, b) => {
   const max = Math.max(Math.abs(a ?? 0), Math.abs(b ?? 0))
   if (!seen.value || !max) return 'scaleX(0)'
   return `scaleX(${Math.max(0.02, Math.abs(v ?? 0) / max)})`
 }
+// 이 쪽(side)이 더 나은가(lowerIsBetter면 작은 쪽이 나음). 같으면 둘 다 아님
 const better = (r, side) => {
   if (r.a == null || r.b == null || r.a === r.b) return false
   const aWins = r.lowerIsBetter ? r.a < r.b : r.a > r.b
   return side === 'a' ? aWins : !aWins
 }
+// 값 표시(행마다 형식 함수가 있으면 그것으로)
 const show = (r, v) => (v == null ? '-' : r.fmt ? r.fmt(v) : v)
 </script>
 

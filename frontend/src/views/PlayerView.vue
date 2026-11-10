@@ -1,5 +1,7 @@
 <script setup>
-// WEB-07: profile, regular-season totals by season, match-by-match log of one season.
+// WEB-07 선수 화면: 프로필, 능력치 카드(시즌별·통산), 포지션 내 위치(백분위), 최근 폼, 선수 유형과 비슷한 선수,
+// 시즌별 정규리그 기록, 한 시즌의 경기별 기록, 관련 기사. 데이터는 /api/players/{code} 한 번으로 모두 받는다.
+// ?season= 으로 볼 시즌을 정하고(없으면 가장 최근), 아래 경기별 기록의 시즌 선택을 바꾸면 화면 전체가 그 시즌으로 바뀐다.
 import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { getPlayer } from '@/api/client'
@@ -14,6 +16,7 @@ import SortableTable from '@/components/SortableTable.vue'
 import { GENDERS, POSITIONS } from '@/constants/volley'
 import { fmtDate, num, pct } from '@/utils/format'
 
+// 경기별 기록 표의 열(SortableTable 형식). 비율 열은 정렬은 비율로, 표시는 '성공/시도'로
 const LOG_COLS = [
   { key: 'date', label: '날짜', left: true, sticky: true, get: (m) => m.date },
   { key: 'opponent', label: '상대', left: true, get: (m) => m.opponent.name },
@@ -33,13 +36,14 @@ const props = defineProps({ code: { type: String, required: true } })
 const route = useRoute()
 const data = ref(null)
 const season = ref(route.query.season || '')
-// season code -> "2025–2026" from the season names in the career rows (falls back to the code)
+// 시즌 코드 → "2025–2026"(시즌별 기록 행의 시즌 이름에서 연도를 뽑음. 없으면 코드 그대로)
 const seasonYears = (code) => {
   const m = data.value?.career.find((r) => r.season.code === code)?.season.name.match(/(\d{4})~(\d{4})/)
   return m ? `${m[1]}–${m[2]}` : code
 }
 const state = ref({ loading: true, error: null })
 
+// 선수 데이터 불러오기(지금 고른 시즌으로). 응답의 시즌으로 선택값을 맞춘다
 async function load() {
   state.value = { loading: true, error: null }
   try {
@@ -52,6 +56,7 @@ async function load() {
   }
 }
 onMounted(load)
+// 시즌 선택이 바뀌면 다시 불러온다(응답으로 맞춘 값이면 무시)
 watch(season, (v) => { if (data.value && v !== data.value.season.code) load() })
 </script>
 

@@ -1,4 +1,6 @@
 <?xml version="1.0"?>
+<!-- HDFS 설정: 복제 1(데이터노드가 하나뿐), 저장 폴더, 권한 검사 끔(개발용),
+     컨테이너 이름으로 서로 찾게 하는 설정(IP 대신 hostname 사용) -->
 <configuration>
   <property><name>dfs.replication</name><value>1</value></property>
   <property><name>dfs.namenode.name.dir</name><value>file:///data/nn</value></property>

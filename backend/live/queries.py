@@ -1,7 +1,7 @@
-"""Live state from the tables Flink live-metrics writes, in the same shape as its live.metrics messages.
+"""Flink live-metrics가 쓴 테이블에서 실시간 상태를 읽어, live.metrics 메시지와 *같은 모양*으로 만든다.
 
-A snapshot (GET /api/live/{key}, and the first SSE event) and every later update then merge the same way in the
-browser: `state` replaces the previous one, `points` are added (or replace the same set/point_no).
+그래서 처음 받는 스냅숏(GET /api/live/{key}, SSE의 첫 이벤트)과 이후의 갱신을 브라우저가 같은 방식으로 합칠 수 있다:
+`state`는 이전 것을 통째로 바꾸고, `points`는 덧붙인다(같은 세트·득점 번호면 바꿔 넣음).
 """
 from datetime import timedelta
 
@@ -12,15 +12,17 @@ from matches.serializers import MatchListSerializer, match_key
 
 from .models import LiveMatchState, LiveRally, LiveSetMetric
 
-STALE_AFTER = timedelta(minutes=30)  # a LIVE row not updated for this long is no longer listed
-FINISHED_SHOWN = timedelta(hours=2)  # games that ended recently stay on the list
+STALE_AFTER = timedelta(minutes=30)  # 이만큼 갱신이 없는 LIVE 행은 목록에서 뺀다(수집이 멈춘 경기)
+FINISHED_SHOWN = timedelta(hours=2)  # 최근에 끝난 경기는 이 시간 동안 목록에 남긴다
 
 
 def _f(value):
+    """Decimal → float(None은 그대로)."""
     return float(value) if value is not None else None
 
 
 def state_dict(st: LiveMatchState, metrics):
+    """상태 행과 세트 지표 행들을 live_state.summary()와 같은 모양의 딕셔너리로. 팀은 id 대신 코드로 바꾼다."""
     m = st.match
     home, away = m.home_team, m.away_team
     codes = {home.id: home.code, away.id: away.code}
@@ -28,7 +30,7 @@ def state_dict(st: LiveMatchState, metrics):
     return {
         "match": match_key(m), "mode": st.mode, "session": st.session, "status": st.status,
         "home": home.code, "away": away.code, "current_set": st.current_set,
-        # a finished set is appended to set_scores, so the current set is open until its score is there
+        # 끝난 세트는 set_scores에 추가되므로, 지금 세트는 그 점수가 들어오기 전까지 '진행 중'이다
         "set_open": st.status == "LIVE" and len(st.set_scores) < st.current_set,
         "home_points": st.home_points, "away_points": st.away_points,
         "home_sets": st.home_sets, "away_sets": st.away_sets, "set_scores": st.set_scores,
@@ -46,6 +48,7 @@ def state_dict(st: LiveMatchState, metrics):
 
 
 def point_dict(r: LiveRally, codes):
+    """득점 행을 live.metrics의 points 항목과 같은 모양으로. codes: 팀 id → 팀 코드."""
     return {"set": r.set_no, "point_no": r.point_no, "rally_no": r.rally_no, "seq": r.seq,
             "home_score": r.home_score, "away_score": r.away_score, "winner": codes.get(r.winner_team_id),
             "server": codes.get(r.server_team_id), "kind": r.kind,
@@ -54,10 +57,12 @@ def point_dict(r: LiveRally, codes):
 
 
 def live_states():
+    """실시간 상태 쿼리셋(경기·시즌·두 팀을 함께 가져옴)."""
     return LiveMatchState.objects.select_related("match__competition__season", "match__home_team", "match__away_team")
 
 
 def snapshot(match: Match):
+    """경기 하나의 현재 전체 상태: 경기 정보 + 상태 + 지금까지의 모든 득점. 상태가 없으면 state는 None."""
     st = live_states().filter(match=match).first()
     data = {"type": "snapshot", "match": MatchListSerializer(match).data, "state": None, "points": []}
     if st is None:
@@ -71,7 +76,7 @@ def snapshot(match: Match):
 
 
 def current():
-    """Games being followed now (live or replayed), and those that ended in the last two hours."""
+    """지금 따라가고 있는 경기(실시간·재생)와 최근 2시간 안에 끝난 경기들. 진행 중 → 실제 경기 → 시작 시각 순."""
     now = timezone.now()
     rows = [st for st in live_states().filter(updated_at__gte=now - FINISHED_SHOWN)
             if st.status == "FINISHED" or st.updated_at >= now - STALE_AFTER]

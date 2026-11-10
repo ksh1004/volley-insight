@@ -1,11 +1,11 @@
 <script setup>
-// WEB-04: one game as it happens (or a replay of a finished game, clearly labelled).
-// Data: SSE snapshot + updates from the gateway (useLiveStream). Layout follows design-system MASTER.md:
-// dense cards, home = primary / away = accent, every colour paired with text, one atomic status line for
-// screen readers (ui-ux-pro-max "Contextual Live Badge Updates": announce the score in context, not bare numbers).
-// Motion (in-house toolkit, src/motion): score digits roll, the side that scored glows once with a "+1", the serve
-// ball pops over to the serving side, the win probability slides and shows how much it moved, new feed lines slide
-// in. Only changes that come from a new point move; the first snapshot just appears. "Reduce motion" turns it off.
+// WEB-04 실시간 경기 화면: 진행 중인 경기(또는 끝난 경기의 재생 — 분명하게 '재생'으로 표시)를 따라간다.
+// 데이터: 게이트웨이의 SSE 스냅숏 + 갱신(useLiveStream). 배치는 design-system MASTER.md를 따른다:
+//   빽빽한 카드, 홈 = 주 색 / 원정 = 강조 색, 모든 색은 글자와 짝을 이룸, 화면 낭독기용 상태 문장 하나
+//   (ui-ux-pro-max "맥락 있는 실시간 배지 갱신": 숫자만이 아니라 '1세트 A 12 대 10 B' 처럼 맥락과 함께 알림).
+// 모션(직접 만든 도구, src/motion): 점수 숫자가 굴러가고, 득점한 쪽이 '+1'과 함께 한 번 빛나고, 서브 공이 서브하는
+// 쪽으로 톡 넘어가고, 승리 확률 막대가 미끄러지며 얼마나 움직였는지 보여 주고, 새 득점 줄이 미끄러져 들어온다.
+// 새 득점으로 생긴 변화만 움직인다(처음 받은 스냅숏은 그냥 나타남). '동작 줄이기' 설정이면 모두 끈다.
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import AsyncState from '@/components/AsyncState.vue'
 import CompareBars from '@/components/CompareBars.vue'
@@ -20,12 +20,15 @@ import { fmtFullDate, fmtTime, pct } from '@/utils/format'
 const props = defineProps({ matchKey: { type: String, required: true } })
 const { match, state, points, connection, error, lastAt } = useLiveStream(props.matchKey)
 
+// '몇 초 전 수집' 표시를 위한 현재 시각(5초마다 갱신)
 const now = ref(Date.now())
 const timer = setInterval(() => { now.value = Date.now() }, 5000)
 onBeforeUnmount(() => clearInterval(timer))
 
+// 첫 스냅숏을 기다리는 중인가
 const loading = computed(() => !match.value && !error.value && connection.value !== 'unsupported')
 const s = computed(() => state.value)
+// 팀 코드 → 팀 이름, 'home' | 'away'
 const name = (code) => (code === match.value?.home.code ? match.value.home.name : code === match.value?.away.code ? match.value.away.name : '')
 const sideOf = (code) => (code === match.value?.home.code ? 'home' : 'away')
 const isReplay = computed(() => s.value?.mode === 'REPLAY')
@@ -36,27 +39,32 @@ const subtitle = computed(() => {
   return `${GENDERS[m.gender]} · ${m.competition}${round} · ${fmtFullDate(m.scheduled_at)} ${fmtTime(m.scheduled_at)}`
 })
 
+// 연결 상태 → 화면 문구
 const CONNECTION = { connecting: '연결 중', open: '실시간 연결됨', reconnecting: '다시 연결하는 중', closed: '연결 끊김',
                      unsupported: '이 브라우저는 실시간 갱신을 지원하지 않습니다' }
+// 마지막 데이터가 얼마나 지났는지("12초 전 수집"). 오래되면 수집이 멈췄다는 신호
 const age = computed(() => {
   if (!lastAt.value) return ''
   const sec = Math.max(0, Math.round((now.value - new Date(lastAt.value).getTime()) / 1000))
   return sec < 60 ? `${sec}초 전 수집` : sec < 3600 ? `${Math.floor(sec / 60)}분 전 수집` : `${Math.floor(sec / 3600)}시간 전 수집`
 })
 
-// ---- scoreboard
+// ---- 스코어보드
+// 지금 상황: "2세트", "1세트 종료 · 다음 세트 준비", "경기 종료" 등
 const setLabel = computed(() => {
   if (!s.value) return ''
   if (finished.value) return '경기 종료'
   if (!s.value.set_open) return s.value.current_set ? `${s.value.current_set}세트 종료 · 다음 세트 준비` : '경기 시작 전'
   return `${s.value.current_set}세트`
 })
+// 3점 이상 연속 득점 중이면 "A 4연속 득점"
 const run = computed(() => {
   if (!s.value || finished.value) return null
   const n = Math.max(s.value.home_run, s.value.away_run)
   if (n < 3) return null
   return `${name(s.value.home_run >= s.value.away_run ? s.value.home : s.value.away)} ${n}연속 득점`
 })
+// 화면 낭독기가 읽는 상태 문장(점수가 바뀔 때마다 한 문장으로)
 const announce = computed(() => {
   if (!s.value) return ''
   const sets = `세트 스코어 ${s.value.home_sets} 대 ${s.value.away_sets}`
@@ -65,14 +73,16 @@ const announce = computed(() => {
   return `${s.value.current_set}세트 ${match.value.home.name} ${s.value.home_points} 대 ${s.value.away_points} ${match.value.away.name}${serve}. ${sets}`
 })
 
-// ---- set selection (follows the current set until the viewer picks one)
+// ---- 세트 선택(보는 사람이 직접 고르기 전까지는 진행 중인 세트를 따라감)
 const picked = ref(null)
 const setNumbers = computed(() => Array.from({ length: s.value?.current_set || 0 }, (_, i) => i + 1))
 const shownSet = computed(() => picked.value ?? s.value?.current_set ?? 1)
+// 점수 흐름 차트에 넘길 이벤트(고른 세트의 득점들을 ScoreFlow가 읽는 모양으로)
 const flowEvents = computed(() => points.value.filter((p) => p.set === shownSet.value)
   .map((p) => ({ grade: 1, home_score: p.home_score, away_score: p.away_score })))
 
-const metricsView = ref('set') // set | match
+const metricsView = ref('set') // 지표 범위: 'set'(고른 세트) | 'match'(경기 전체)
+// 두 팀 지표 비교 행: 세트·팀별 지표를 범위에 맞게 더한다
 const metricRows = computed(() => {
   const ms = (s.value?.metrics || []).filter((m) => metricsView.value === 'match' || m.set === shownSet.value)
   const sum = (side, f) => ms.filter((m) => m.side === side).reduce((acc, m) => acc + (m[f] || 0), 0)
@@ -90,7 +100,8 @@ const metricRows = computed(() => {
   ]
 })
 
-// ---- motion feedback for a new point (not for the first snapshot, which may hold a whole set at once)
+// ---- 새 득점의 모션 피드백(처음 받은 스냅숏에는 하지 않음: 세트 하나가 통째로 들어 있을 수 있으므로).
+// 한 번에 3점 넘게 늘었으면(재연결 등) 빛내지 않는다
 const { flash: scored, pulse: pulseScore } = useFlash(1100)
 let seenPoints = null
 watch(() => points.value.length, (len) => {
@@ -100,7 +111,7 @@ watch(() => points.value.length, (len) => {
   }
   seenPoints = len
 })
-// how much the live win probability moved with the last point, shown for a few seconds
+// 마지막 득점으로 승리 확률이 몇 %p 움직였는지, 4초 동안 표시
 const probMove = ref(null)
 let probTimer = 0
 watch(() => s.value?.home_win_prob, (now, before) => {
@@ -113,8 +124,9 @@ watch(() => s.value?.home_win_prob, (now, before) => {
 })
 onBeforeUnmount(() => clearTimeout(probTimer))
 
-// ---- recent points, newest first
+// ---- 최근 득점 12개, 최신부터
 const recent = computed(() => points.value.slice(-12).reverse())
+// 득점 한 줄 설명: "선수 공격 종류" 또는 "상대 범실 · 선수 범실 종류"
 function describe(p) {
   if (p.kind === 'OPP_ERROR') {
     if (!p.player_name) return '상대 범실'

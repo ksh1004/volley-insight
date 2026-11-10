@@ -1,5 +1,7 @@
-# Airflow 3 (LocalExecutor via `airflow standalone`) that can also act as the Spark driver:
-# Java 11 + PySpark submit jobs to YARN (client mode), using the Hadoop configs in /opt/hadoop-conf.
+# Airflow 3 이미지(`airflow standalone`으로 LocalExecutor 실행). Spark 드라이버 역할도 한다:
+# Java 11 + PySpark로 YARN에 작업을 제출한다(client 모드). 하둡 설정은 /opt/hadoop-conf(compose가 연결).
+# 수집기 의존성도 들어 있어 live-collector, kafka-lag 서비스가 이 이미지를 그대로 쓴다.
+# Java 11 실행 환경만 가져오기 위한 단계(멀티 스테이지 빌드)
 FROM eclipse-temurin:11-jre AS jre
 
 FROM apache/airflow:3.0.6-python3.11
@@ -13,10 +15,10 @@ ENV JAVA_HOME=/opt/java/openjdk \
 COPY --chown=airflow:root requirements.txt requirements-ml.txt /
 USER airflow
 RUN pip install --no-cache-dir "apache-airflow==3.0.6" -r /requirements.txt
-# ML client libraries in a separate step (see requirements-ml.txt)
+# ML 라이브러리는 따로 설치한다(이유는 requirements-ml.txt 참고)
 RUN pip install --no-cache-dir -r /requirements-ml.txt
 
-# PostgreSQL JDBC driver (serving DB) and elasticsearch-hadoop (index_entities.py) for spark-submit --jars.
+# spark-submit --jars로 넘길 JAR: PostgreSQL JDBC 드라이버(서비스 DB 적재), elasticsearch-hadoop(index_entities.py)
 USER root
 RUN mkdir -p /opt/spark-jars \
  && curl -fsSL -o /opt/spark-jars/postgresql.jar \

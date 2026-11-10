@@ -1,6 +1,6 @@
 #!/bin/bash
-# Runs once, on the first start of an empty data volume.
-# POSTGRES_DB (service) is created by the image itself; this adds the tool databases.
+# 데이터 볼륨이 비어 있는 첫 시작 때 한 번만 실행된다(PostgreSQL 이미지의 docker-entrypoint-initdb.d 규칙).
+# POSTGRES_DB(서비스 DB)는 이미지가 직접 만들고, 이 스크립트는 도구용 DB(airflow, mlflow)를 더한다.
 set -euo pipefail
 
 for db in "$AIRFLOW_DB" "$MLFLOW_DB"; do

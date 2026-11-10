@@ -1,19 +1,24 @@
-# Development stack (design.md 1.5). Docker Desktop has ~16 GB here, so services are grouped:
-#   (no profile)     core: postgres, kafka, kafka-init       -> always started
-#   --profile app    django-api, django-sse, frontend
-#   --profile batch  hadoop (hdfs + yarn), airflow, mlflow
-#   --profile stream hdfs + flink (+ live-collector)
-#   --profile search elasticsearch, kibana, filebeat, metricbeat (+ kibana-setup, runs once)
-# Example: docker compose --profile app up -d
-# All ports are bound to 127.0.0.1 only (NFR-34).
+# 개발 환경 전체를 띄우는 Docker Compose 설정(설계서 1.5). 이 PC의 Docker Desktop 메모리가 약 16GB라
+# 서비스를 '프로필'로 묶어 필요한 것만 띄울 수 있게 했다.
+#   (프로필 없음)     기본: postgres, kafka, kafka-init           → 항상 뜬다
+#   --profile app    웹: django-api, django-sse, frontend
+#   --profile batch  배치: hadoop(hdfs + yarn), airflow, mlflow
+#   --profile stream 스트림: hdfs + flink (+ live-collector)
+#   --profile search 검색·모니터링: elasticsearch, kibana, filebeat, metricbeat (+ kibana-setup, 한 번만 실행)
+# 예: docker compose --profile app up -d
+# 모든 포트는 127.0.0.1(이 PC)에만 열린다(NFR-34: 외부에서 접속 불가).
+# 비밀 값(비밀번호 등)은 .env 파일에서 ${이름}으로 읽는다(.env는 git에 올리지 않음, 예시는 .env.example).
+# mem_limit: 서비스마다 메모리 상한(한 서비스가 PC 메모리를 다 쓰지 못하게).
 
+# 하둡 서비스 4개(namenode, datanode, resourcemanager, nodemanager)가 함께 쓰는 설정 조각(YAML 앵커)
 x-hadoop: &hadoop
   build: ./infra/hadoop
   image: volley/hadoop:3.4.1
   restart: unless-stopped
 
 services:
-  # ---------------- core ----------------
+  # ---------------- 기본(core) ----------------
+  # 서비스 DB(웹·분석 결과), Airflow 메타 DB, MLflow DB를 한 PostgreSQL에 둔다(init-databases.sh가 처음에 만듦)
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -34,8 +39,8 @@ services:
       retries: 20
     mem_limit: 1g
 
-  # The KOVO 1 req/s budget (NFR-01) is a lock file shared by every container that calls KOVO (airflow,
-  # live-collector). New named volumes are owned by root; the airflow image runs as uid 50000.
+  # KOVO 1초 1회 예산(NFR-01)은 KOVO를 부르는 모든 컨테이너(airflow, live-collector)가 함께 쓰는 잠금 파일이다.
+  # 새 볼륨은 root 소유로 만들어지는데 airflow 이미지는 uid 50000으로 돌기 때문에, 한 번 소유자를 바꿔 주고 끝나는 컨테이너.
   kovo-rate-perms:
     image: volley/airflow:3.0.6
     user: "0:0"
@@ -44,7 +49,7 @@ services:
       - kovo-rate:/run/kovo
     restart: "no"
 
-  # New named volumes are owned by root; the kafka image runs as appuser (uid 1000).
+  # 같은 이유: 새 볼륨은 root 소유인데 kafka 이미지는 appuser(uid 1000)로 돈다. 소유자를 바꾸고 끝난다.
   kafka-volume-perms:
     image: apache/kafka:3.9.0
     user: "0:0"
@@ -53,6 +58,8 @@ services:
       - kafka-data:/tmp/kraft-combined-logs
     restart: "no"
 
+  # Kafka 브로커 하나(KRaft 모드: ZooKeeper 없이 브로커가 컨트롤러 역할도 함). 메시지는 7일(168시간) 보관.
+  # 컨테이너끼리는 kafka:9092, PC에서는 localhost:29092로 접속한다. 토픽은 자동 생성하지 않는다(kafka-init이 만듦).
   kafka:
     image: apache/kafka:3.9.0
     restart: unless-stopped
@@ -84,6 +91,7 @@ services:
       retries: 20
     mem_limit: 1g
 
+  # 필요한 토픽을 만들고 끝나는 컨테이너(infra/kafka/create-topics.sh)
   kafka-init:
     image: apache/kafka:3.9.0
     depends_on:
@@ -95,7 +103,8 @@ services:
       - ./infra/kafka/create-topics.sh:/scripts/create-topics.sh:ro
     restart: "no"
 
-  # ---------------- app ----------------
+  # ---------------- 웹(app) ----------------
+  # REST API 서버(Django 개발 서버). backend 폴더를 그대로 연결해 코드를 고치면 바로 반영된다
   django-api:
     profiles: [app]
     build: ./backend
@@ -112,8 +121,9 @@ services:
       postgres: { condition: service_healthy }
     mem_limit: 768m
 
-  # SSE gateway (design.md 1.5): GET /api/live/{match}/stream, fed by Kafka live.metrics. Same code as django-api,
-  # served by Uvicorn (ASGI) so one process can hold many open streams. The frontend proxies only that path here.
+  # SSE 게이트웨이(설계서 1.5): GET /api/live/{경기}/stream. Kafka live.metrics를 받아 브라우저로 밀어 준다.
+  # django-api와 같은 코드지만 Uvicorn(ASGI)으로 띄워, 한 프로세스가 열린 스트림을 많이 붙들 수 있다.
+  # 프론트엔드 개발 서버는 그 주소만 여기로 보낸다(vite.config.js).
   django-sse:
     profiles: [app]
     image: volley/backend:dev
@@ -132,6 +142,7 @@ services:
       kafka: { condition: service_healthy }
     mem_limit: 384m
 
+  # Vue 개발 서버(Vite). node_modules는 별도 볼륨이라 Windows 폴더와 섞이지 않는다
   frontend:
     profiles: [app]
     image: node:22-alpine
@@ -149,7 +160,9 @@ services:
     depends_on: [django-api, django-sse]
     mem_limit: 768m
 
-  # ---------------- batch / stream: hadoop ----------------
+  # ---------------- 배치 / 스트림: 하둡 ----------------
+  # HDFS(분산 파일 시스템): namenode = 파일 목록·위치 관리, datanode = 실제 데이터 저장
+  # YARN(자원 관리): resourcemanager = 작업 배정, nodemanager = Spark executor가 실제로 도는 곳
   namenode:
     <<: *hadoop
     profiles: [batch, stream]
@@ -191,7 +204,9 @@ services:
     depends_on: [resourcemanager]
     mem_limit: 3500m
 
-  # ---------------- batch: airflow, mlflow ----------------
+  # ---------------- 배치: airflow, mlflow ----------------
+  # Airflow: DAG(작업 흐름) 일정 실행. standalone = 웹 화면 + 스케줄러 + 작업자를 한 컨테이너에서.
+  # Spark 작업도 여기서 제출한다(드라이버가 이 컨테이너 안에서 돈다 → 메모리 4GB).
   airflow:
     profiles: [batch]
     build: ./infra/airflow
@@ -201,8 +216,8 @@ services:
     command: standalone
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      # LocalExecutor keeps one process per parallel slot (default 32, ~150 MB each). Our DAGs need a few at once;
-      # 32 idle workers left too little of the 4 GB for a Spark driver (curation was OOM-killed on 2026-11-05).
+      # LocalExecutor는 병렬 슬롯마다 프로세스 하나를 띄워 둔다(기본 32개, 각 약 150MB). 우리 DAG는 동시에 몇 개면 된다.
+      # 32개가 놀면서 4GB를 차지하자 Spark 드라이버가 쓸 메모리가 모자랐다(2026-11-05 정제 작업이 메모리 부족으로 강제 종료).
       AIRFLOW__CORE__PARALLELISM: "6"
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${AIRFLOW_DB}
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
@@ -212,17 +227,17 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       MLFLOW_TRACKING_URI: http://mlflow:5000
       PYTHONPATH: /opt/airflow/collectors
-      # every KOVO request from any task process (and live-collector) shares one 1 req/s budget (NFR-01)
+      # 어느 작업 프로세스(와 live-collector)의 KOVO 요청이든 하나의 1초 1회 예산을 함께 쓴다(NFR-01)
       KOVO_RATE_LOCK_FILE: /run/kovo/rate.lock
       WEBHDFS_URL: http://namenode:9870/webhdfs/v1
       ELASTICSEARCH_URL: http://elasticsearch:9200
       NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
       NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
-      # PIPE-09: a task that failed for good is stored in job_alert and, when set, posted to this incoming webhook
-      # (Mattermost, Slack or Discord). The message links to the task log on this PC's Airflow.
+      # PIPE-09: 최종 실패한 작업은 job_alert에 저장되고, 이 값이 있으면 메신저 웹훅(Mattermost, Slack, Discord)으로도 보낸다.
+      # 메시지에는 이 PC의 Airflow 작업 로그 링크가 들어간다.
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
       AIRFLOW_UI_URL: http://localhost:8080
-      # serving DB, used by Spark jobs (driver runs here in client mode) to load curated tables
+      # 서비스 DB 접속 정보: Spark 작업(client 모드라 드라이버가 여기서 돎)이 정제·분석 결과를 적재할 때 쓴다
       POSTGRES_HOST: postgres
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -242,6 +257,7 @@ services:
       resourcemanager: { condition: service_started }
     mem_limit: 4g
 
+  # MLflow: 모델 학습 기록(실험·지표)과 모델 저장소(버전, champion 별칭). 학습 결과 파일은 볼륨에 저장
   mlflow:
     profiles: [batch]
     build: ./infra/mlflow
@@ -258,7 +274,9 @@ services:
       postgres: { condition: service_healthy }
     mem_limit: 768m
 
-  # ---------------- stream: flink ----------------
+  # ---------------- 스트림: flink ----------------
+  # Flink: Kafka 메시지를 실시간으로 처리(raw-archiver, article-enricher, live-metrics).
+  # jobmanager = 작업 관리·화면(8081), taskmanager = 실제 처리. 하둡 설정을 함께 넣어 HDFS에 쓸 수 있게 이미지를 만든다.
   flink-jobmanager:
     profiles: [stream]
     build:
@@ -278,7 +296,7 @@ services:
         taskmanager.memory.process.size: 2048m
         execution.checkpointing.interval: 30s
         state.checkpoints.dir: hdfs://namenode:9000/flink/checkpoints
-      # article-enricher and live-metrics write to the serving DB (+ Elasticsearch for articles)
+      # article-enricher와 live-metrics는 서비스 DB에 쓴다(기사는 Elasticsearch에도)
       POSTGRES_HOST: postgres
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -302,8 +320,8 @@ services:
     depends_on: [flink-jobmanager, datanode]
     mem_limit: 2300m
 
-  # Keeps raw-archiver, article-enricher and live-metrics submitted: after a PC/Docker restart the job manager comes back
-  # empty, so this re-submits each job from its newest checkpoint. Checks every minute; never submits a second copy.
+  # raw-archiver, article-enricher, live-metrics가 늘 제출돼 있게 지키는 컨테이너: PC나 Docker가 재시작되면 jobmanager가
+  # 빈 상태로 뜨므로, 1분마다 확인해 없으면 가장 최근 체크포인트에서 다시 제출한다. 이미 돌고 있으면 두 번 제출하지 않는다.
   flink-job-keeper:
     profiles: [stream]
     image: volley/flink:1.20.1
@@ -322,7 +340,8 @@ services:
     depends_on: [flink-jobmanager, flink-taskmanager]
     mem_limit: 512m
 
-  # Follows today's games: new play-by-play events every 15 s -> kovo.live -> Flink live-metrics (COL-06)
+  # 오늘 경기를 따라간다: 15초마다 새 문자중계 이벤트 → kovo.live → Flink live-metrics (COL-06)
+  # airflow 이미지(수집기 의존성이 들어 있음)를 그대로 써서 수집기 하나만 띄운다
   live-collector:
     profiles: [stream]
     image: volley/airflow:3.0.6
@@ -346,7 +365,8 @@ services:
       kafka: { condition: service_healthy }
     mem_limit: 256m
 
-  # ---------------- search ----------------
+  # ---------------- 검색·모니터링(search) ----------------
+  # Elasticsearch: 기사·팀·선수 검색 색인과 운영 로그·지표 저장(한국어 분석기 nori 플러그인을 넣은 이미지). 보안은 끔(이 PC 전용)
   elasticsearch:
     profiles: [search]
     build: ./infra/elasticsearch
@@ -364,6 +384,7 @@ services:
       retries: 30
     mem_limit: 2g
 
+  # Kibana: 운영 대시보드(수집 현황, Kafka 지연, 품질 문제 등)를 보는 화면(5601)
   kibana:
     profiles: [search]
     image: kibana:8.17.4
@@ -379,6 +400,7 @@ services:
       retries: 40
     mem_limit: 1g
 
+  # Filebeat: 모든 컨테이너의 로그를 모아 Elasticsearch로 보낸다(infra/filebeat/filebeat.yml)
   filebeat:
     profiles: [search]
     image: elastic/filebeat:8.17.4
@@ -395,6 +417,7 @@ services:
       elasticsearch: { condition: service_healthy }
     mem_limit: 256m
 
+  # Metricbeat: Kafka·PostgreSQL 지표와 DB 질의 결과(품질 문제 수 등)를 주기적으로 Elasticsearch로 보낸다
   metricbeat:
     profiles: [search]
     image: elastic/metricbeat:8.17.4
@@ -413,7 +436,7 @@ services:
       elasticsearch: { condition: service_healthy }
     mem_limit: 256m
 
-  # Consumer lag of every Kafka group -> Elasticsearch metrics-volley, every 30 s (collectors/kafka_lag.py)
+  # 모든 Kafka 컨슈머 그룹의 지연 → Elasticsearch metrics-volley, 30초마다(collectors/kafka_lag.py)
   kafka-lag:
     profiles: [search]
     image: volley/airflow:3.0.6
@@ -431,7 +454,7 @@ services:
       kafka: { condition: service_healthy }
     mem_limit: 256m
 
-  # Loads the Kibana data views and the operations dashboard (infra/kibana/dashboard.ndjson), then exits.
+  # Kibana 데이터 뷰와 운영 대시보드(infra/kibana/dashboard.ndjson)를 넣고 끝나는 컨테이너
   kibana-setup:
     profiles: [search]
     image: curlimages/curl:8.11.1
@@ -442,6 +465,7 @@ services:
     depends_on:
       kibana: { condition: service_healthy }
 
+# 데이터를 보관하는 Docker 볼륨들(컨테이너를 지워도 남는다)
 volumes:
   pg-data:
   kafka-data:

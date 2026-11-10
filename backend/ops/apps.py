@@ -1,3 +1,4 @@
+"""Django 앱 설정: 데이터 운영(품질 검사 결과, 데이터 보정, 수집 현황, 수동 실행). 관리자 화면 전용."""
 from django.apps import AppConfig
 
 

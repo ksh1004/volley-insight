@@ -1,4 +1,4 @@
-# Installed after Airflow in its own step: resolving these together with apache-airflow fails
-# (pip: resolution-too-deep). Used by spark_jobs/train_model.py and predict_matches.py.
+# Airflow를 설치한 뒤 별도 단계에서 설치한다: apache-airflow와 한 번에 의존성을 풀면 pip가 실패한다
+# (resolution-too-deep). spark_jobs/train_model.py와 predict_matches.py가 쓴다.
 mlflow-skinny==3.1.1
 hyperopt==0.2.7

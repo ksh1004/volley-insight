@@ -1,26 +1,28 @@
 <script setup>
-// Team value vs league average as a bar from the centre line: right = better than average, left = worse.
-// Values close to the average (e.g. 51.2% vs 50.4%) stay readable, unlike two full-length bars.
-// Motion: bars grow out of the centre line one after another when first seen; the difference label follows.
+// 팀 값 vs 리그 평균을 가운데 선에서 뻗는 막대로: 오른쪽 = 평균보다 나음, 왼쪽 = 못함.
+// 평균과 비슷한 값(예: 51.2% vs 50.4%)도 차이가 잘 보인다(긴 막대 두 개를 나란히 놓으면 차이가 안 보임).
+// 모션: 처음 보일 때 막대가 가운데에서 차례로 자라나고, 차이 숫자가 막대 끝을 따라간다.
 import { ref } from 'vue'
 import { useInView } from '@/motion/core'
 
 defineProps({
   rows: { type: Array, required: true }, // [{ label, a: team, b: league, fmt, lowerIsBetter }]
-  scale: { type: Number, default: 25 }, // relative difference (%) that fills half the bar
+  scale: { type: Number, default: 25 }, // 막대 절반을 꽉 채우는 상대 차이(%). 25면 평균보다 25% 나을 때 끝까지
 })
 
 const el = ref(null)
 const seen = useInView(el)
 
+// 평균 대비 상대 차이(%). 양수 = 나음(lowerIsBetter면 부호를 뒤집음). 계산할 수 없으면 null
 const rel = (r) => {
   if (r.a == null || r.b == null || r.b === 0) return null
   const d = ((r.a - r.b) / Math.abs(r.b)) * 100
-  return r.lowerIsBetter ? -d : d // positive = better
+  return r.lowerIsBetter ? -d : d // 양수 = 나음
 }
-// the bar is half the track minus room for the label; its length is a scale of that, grown from the centre
+// 막대는 트랙의 절반(이름표 자리 제외) 안에서 차이에 비례한 길이로, 가운데에서 자란다(0~1)
 const grow = (r, scale) => (seen.value ? Math.min(1, Math.abs(rel(r) ?? 0) / scale) : 0)
 const show = (r, v) => (v == null ? '-' : r.fmt ? r.fmt(v) : v)
+// 양수에 + 붙이기
 const sign = (v) => (v > 0 ? '+' : '')
 </script>
 

@@ -1,10 +1,13 @@
 <script setup>
+// 앱의 뼈대: 머리글(로고, 주 메뉴, 검색창, 로그인/내 정보), 본문(지금 주소의 화면), 바닥글(데이터 출처).
+// 모든 화면이 이 안에 그려진다. <style>에는 전역 디자인 토큰(색·간격)과 공용 클래스(.card, .tabs, .data 표 등)가 있다.
 import { RouterLink, RouterView } from 'vue-router'
 import SearchBox from '@/components/SearchBox.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
 
+// 주 메뉴(exact: 홈은 주소가 정확히 '/'일 때만 선택 표시)
 const NAV = [
   { to: '/', label: '홈', exact: true },
   { to: '/schedule', label: '일정·결과' },
@@ -15,6 +18,7 @@ const NAV = [
 </script>
 
 <template>
+  <!-- 키보드 사용자가 메뉴를 건너뛰고 바로 본문으로 갈 수 있는 링크(Tab을 처음 누르면 보임) -->
   <a class="skip-link" href="#main">본문 바로가기</a>
   <header class="app-header">
     <div class="wrap header-row">
@@ -25,6 +29,7 @@ const NAV = [
         </svg>
         <span>배구 전력 분석</span>
       </RouterLink>
+      <!-- 선택된 메뉴 밑줄이 미끄러져 이동(v-glider:underline) -->
       <nav v-glider:underline="'.is-active'" class="nav" aria-label="주 메뉴">
         <RouterLink v-for="n in NAV" :key="n.to" :to="n.to" class="nav-link"
                     :exact-active-class="n.exact ? 'is-active' : ''" :active-class="n.exact ? '' : 'is-active'">{{ n.label }}</RouterLink>
@@ -39,6 +44,8 @@ const NAV = [
     </div>
   </header>
   <main id="main" class="wrap app-main" tabindex="-1">
+    <!-- 화면 전환 효과: 주소(fullPath)가 바뀌면 이전 화면이 사라진 뒤(out-in) 새 화면이 나타난다.
+         키가 전체 주소라서 같은 화면이라도 쿼리가 바뀌면 다시 만들어진다(그래서 일부 화면은 history.replaceState를 씀) -->
     <RouterView v-slot="{ Component, route }">
       <Transition name="page" mode="out-in">
         <div :key="route.fullPath" class="page"><component :is="Component" /></div>
@@ -54,7 +61,8 @@ const NAV = [
 </template>
 
 <style>
-/* Design tokens: design-system/volley-insight/MASTER.md */
+/* 디자인 토큰(색, 간격, 둥글기 등): design-system/volley-insight/MASTER.md와 같은 값.
+   컴포넌트는 색 값을 직접 쓰지 않고 이 변수(var(--color-...))만 쓴다 → 색을 바꿀 때 여기만 고치면 된다 */
 :root {
   --color-primary: #1e40af;
   --color-primary-soft: #eff4ff;

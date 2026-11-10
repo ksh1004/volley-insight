@@ -1,12 +1,13 @@
 <script setup>
-// Loading / error / empty states for every page. Loading shows a skeleton that keeps the layout in place
-// (design system: no blank screen or bare "loading" text) and marks the region busy for screen readers.
+// 모든 화면이 쓰는 로딩 / 오류 / 빈 상태 표시. 쓰는 법: <AsyncState :loading :error :empty>실제 내용</AsyncState>
+// 로딩 중에는 회색 뼈대(skeleton)를 보여 레이아웃이 그대로 유지되게 하고(디자인 시스템: 빈 화면이나 '로딩 중' 글자만
+// 띄우지 않음), 화면 낭독기에 '불러오는 중'임을 알린다(aria-busy). 셋 다 아니면 slot(실제 내용)을 그린다.
 defineProps({
   loading: Boolean,
   error: [String, Object, null],
   empty: Boolean,
   emptyText: { type: String, default: '데이터가 없습니다.' },
-  rows: { type: Number, default: 4 }, // skeleton lines
+  rows: { type: Number, default: 4 }, // 뼈대 줄 수
 })
 </script>
 

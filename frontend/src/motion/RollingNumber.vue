@@ -1,8 +1,8 @@
 <script setup>
-// Scoreboard digits that roll like a mechanical counter when the score changes (our own take on the
-// odometer idea: every place is a strip of 0-9 moved with a CSS transform, so only the changed place moves).
-// roll-in: start from 0 and roll to the value once mounted (a finished match's final score).
-// The strips are hidden from screen readers; the number itself is read once.
+// 점수가 바뀌면 기계식 계수기처럼 굴러가는 스코어보드 숫자(주행 거리계 방식을 직접 구현: 자리마다 0~9가 세로로
+// 늘어선 띠를 CSS transform으로 올리고 내리므로, 바뀐 자리만 움직인다).
+// roll-in: 처음 그려질 때 0에서 값까지 굴러감(끝난 경기의 최종 점수 등).
+// 숫자 띠는 화면 낭독기에서 숨기고, 숫자 자체는 한 번만 읽힌다. min-digits: 앞을 0으로 채울 최소 자릿수.
 import { computed, onMounted, ref, watch } from 'vue'
 import { reducedMotion } from './core'
 
@@ -14,11 +14,13 @@ const props = defineProps({
 
 const shown = ref(props.rollIn && !reducedMotion.value ? 0 : props.value)
 watch(() => props.value, (v) => { shown.value = v })
+// 첫 화면을 그린 뒤(두 프레임 뒤) 값을 바꿔야 CSS 전환이 실제로 일어난다
 onMounted(() => {
   if (shown.value !== props.value) requestAnimationFrame(() => requestAnimationFrame(() => { shown.value = props.value }))
 })
 
-// keyed by place (ones, tens, ...), so the ones strip stays the same element when 9 becomes 10
+// 자리(일, 십, ...)를 키로 쓴다: 9가 10이 될 때도 일의 자리 띠가 같은 요소로 남아 자연스럽게 굴러가도록.
+// lead: 값보다 앞에 채운 0(흐리게 그림)
 const places = computed(() => {
   const digits = String(Math.max(0, Math.round(props.value))).length
   const s = String(Math.max(0, Math.round(shown.value))).padStart(Math.max(props.minDigits, digits), '0')

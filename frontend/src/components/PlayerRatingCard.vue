@@ -1,12 +1,11 @@
 <script setup>
-// Player card (position ratings). A strip of the player's cards on top: 통산 (career) and every season, each with
-// its overall as a small column, so the strip is also his trend. Picking one shows that card: overall ring, rank,
-// then one bullet bar per ability with the position average (60) marked, the record behind it and the change from
-// his last season at the position. Career = season scores averaged with the sets played as weights
-// (spark_jobs/player_ratings.py career_cards). Chart guidance (ui-ux-pro-max "Bullet Chart"): numbers and the
-// reference are written as text, colour only repeats them.
-// Interaction: the strip is a tab list (arrow keys, Home/End); pointing at or focusing an ability explains it.
-// Motion: switching cards glides bars, ring and numbers to the new values; the strip keeps the pick in view.
+// 선수 능력치 카드(포지션별 능력치). 선수 화면 맨 위.
+// 위쪽 띠: 통산과 모든 시즌을 늘어놓고, 각각의 종합 점수를 작은 막대로 보여 준다(그래서 띠 자체가 시즌별 추이가 된다).
+// 하나를 고르면 그 카드: 종합 게이지, 순위, 능력치마다 불릿 막대(포지션 평균 60에 세로선), 근거 기록,
+// 같은 포지션 직전 시즌 대비 변화. 통산 = 시즌 점수를 출전 세트로 가중 평균(spark_jobs/player_ratings.py career_cards).
+// 차트 지침(ui-ux-pro-max "불릿 차트"): 숫자와 기준선을 글자로 적고, 색은 그것을 반복할 뿐이다.
+// 상호작용: 띠는 탭 목록(←→, Home/End로 이동). 능력치를 가리키거나 포커스하면 무엇을 쟀는지 설명이 나온다.
+// 모션: 카드를 바꾸면 막대·게이지·숫자가 새 값으로 미끄러지고, 띠는 고른 항목이 보이게 스크롤된다.
 import { computed, nextTick, onMounted, ref, useId, watch } from 'vue'
 import ScoreRing from '@/components/ScoreRing.vue'
 import { ABILITY_HELP, bandOf, formatStat, yearsLong, yearsShort } from '@/constants/ratings'
@@ -14,61 +13,71 @@ import AnimatedNumber from '@/motion/AnimatedNumber.vue'
 import { reducedMotion, useInView } from '@/motion/core'
 
 const props = defineProps({
-  ratings: { type: Object, required: true }, // /api/players/{code} `ratings`: {seasons (oldest first), careers}
-  season: { type: String, default: '' }, // the page's season: its card is shown first when there is one
+  ratings: { type: Object, required: true }, // /api/players/{code}의 `ratings`: {seasons(오래된 순), careers}
+  season: { type: String, default: '' }, // 화면의 시즌: 그 시즌 카드가 있으면 그것을 먼저 보여 준다
   gender: { type: String, required: true },
-  preferCareer: Boolean, // opened from the all-time board: start on 통산
+  preferCareer: Boolean, // 역대 순위표에서 들어온 경우: 통산 카드부터
 })
 
-// a second career (another position) only when he played it for 2+ seasons; otherwise it repeats a season card
+// 두 번째 통산 카드(다른 포지션)는 그 포지션으로 2시즌 이상 뛰었을 때만(1시즌뿐이면 시즌 카드와 같은 내용이라)
 const careers = computed(() => props.ratings.careers.filter((c, i) => i === 0 || c.seasons >= 2))
 const seasons = computed(() => props.ratings.seasons)
+// 주 포지션(통산 세트가 가장 많은 포지션). 다른 포지션 시즌이 섞여 있으면 띠에 포지션 코드도 적는다
 const mainPosition = computed(() => props.ratings.careers[0]?.position ?? seasons.value.at(-1)?.position)
 const showPosition = computed(() => careers.value.length > 1 || seasons.value.some((s) => s.position !== mainPosition.value))
+// 띠 항목의 키: 시즌 카드는 시즌 코드, 통산 카드는 'career-포지션'
 const keyOf = (item) => (item.season ? item.season.code : `career-${item.position}`)
 const items = computed(() => [...careers.value, ...seasons.value])
 
-const pick = ref('')
+const pick = ref('') // 고른 항목의 키
+// 처음 고를 항목: 화면 시즌의 카드 → 없으면 통산 → 없으면 가장 최근 시즌
 function defaultPick() {
   const s = props.preferCareer ? null : seasons.value.find((x) => x.season.code === props.season)
   return keyOf(s || careers.value[0] || seasons.value.at(-1))
 }
 pick.value = defaultPick()
+// 화면의 시즌이 바뀌거나 데이터를 다시 받으면 기본 항목으로 돌아간다
 watch(() => [props.ratings, props.season], () => { pick.value = defaultPick(); nextTick(() => keepInView(false)) })
 
+// 지금 보여 줄 카드와, 비교할 직전 시즌 카드(통산이면 없음)
 const card = computed(() => items.value.find((i) => keyOf(i) === pick.value) || items.value[0])
 const isCareer = computed(() => !card.value.season)
 const prev = computed(() => (isCareer.value ? null : card.value.previous))
+// 변화량(어느 한쪽이 없으면 null), 화살표 기호, 색 클래스
 const delta = (now, before) => (now == null || before == null ? null : now - before)
 const overallDelta = computed(() => delta(card.value.overall, prev.value?.overall))
 const arrow = (d) => (d > 0 ? '▲' : d < 0 ? '▼' : '–')
 const trend = (d) => (d > 0 ? 'up' : d < 0 ? 'down' : '')
 
-// strip columns: 30..99 fills the column; the dashed line marks the position average (60)
+// 띠의 작은 막대 높이: 30~99점을 막대 높이에 맞춘다(최소 6%). 점선은 포지션 평균(60)
 const fill = (v) => (v == null ? 0 : Math.max(0.06, Math.min(1, (v - 30) / 69)))
+// 띠 항목마다 화면 낭독기가 읽을 설명
 const tabLabel = (item) => `${item.season ? `${yearsLong(item.season.years)} 시즌` : '통산'} ${item.position_name}`
   + ` 종합 ${item.overall ?? '없음'}${item.season && !item.qualified ? ' (잠정)' : ''}`
 
 const id = useId()
 const strip = ref(null)
+// 고른 항목이 띠의 보이는 영역 가운데에 오도록 가로 스크롤(smooth=false면 즉시)
 function keepInView(smooth = true) {
   const s = strip.value
   const btn = s?.querySelector(`[data-key="${pick.value}"]`)
   if (!btn) return
-  if (btn.closest('.careers')) { // 통산 is pinned; on first show, start from the latest seasons
+  if (btn.closest('.careers')) { // 통산은 왼쪽에 고정돼 있다. 처음 보여 줄 때는 최근 시즌 쪽(오른쪽 끝)부터
     if (!smooth) s.scrollLeft = s.scrollWidth
     return
   }
-  const pinned = s.querySelector('.careers')?.offsetWidth || 0 // the sticky 통산 part covers the left edge
+  const pinned = s.querySelector('.careers')?.offsetWidth || 0 // 고정된 통산 부분이 왼쪽을 가리는 폭
   const left = btn.offsetLeft + btn.offsetWidth / 2 - (pinned + s.clientWidth) / 2
   s.scrollTo({ left: Math.max(0, left), behavior: smooth && !reducedMotion.value ? 'smooth' : 'auto' })
 }
+// 항목 고르기(focus면 그 탭으로 키보드 포커스도 옮김)
 async function select(key, focus = false) {
   pick.value = key
   await nextTick()
   if (focus) strip.value?.querySelector(`[data-key="${key}"]`)?.focus({ preventScroll: true })
   keepInView()
 }
+// 탭 목록 키보드: ←→ 이웃 항목, Home/End 처음·끝
 function onKey(e) {
   const keys = items.value.map(keyOf)
   const i = keys.indexOf(pick.value)
@@ -81,8 +90,9 @@ onMounted(() => keepInView(false))
 
 const el = ref(null)
 const seen = useInView(el)
-const focus = ref(null)
+const focus = ref(null) // 가리키거나 포커스한 능력치 키(설명 표시용)
 const focused = computed(() => card.value.abilities.find((a) => a.key === focus.value))
+// 화면 낭독기용 카드 요약 한 문장
 const summary = computed(() => {
   const c = card.value
   const parts = c.abilities.filter((a) => a.score != null).map((a) => `${a.label} ${a.score}`).join(', ')
@@ -213,10 +223,11 @@ const summary = computed(() => {
 .col i { position: absolute; bottom: 0; left: 50%; width: 14px; height: 100%; margin-left: -7px; border-radius: 3px 3px 0 0;
          transform-origin: center bottom; transition: transform var(--dur-chart) var(--ease-out); }
 .it.light .col i { opacity: .4; }
-.col i.top { background: var(--color-heading); }
-.col i.high { background: var(--color-primary); }
-.col i.mid { background: color-mix(in srgb, var(--color-primary) 55%, white); }
-.col i.low, .col i.none { background: var(--color-muted-foreground); opacity: .55; }
+/* score bands (bandOf) for both the strip columns and the ability bars; the number is always written beside */
+:is(.col, .track) i.top { background: var(--color-heading); }
+:is(.col, .track) i.high { background: var(--color-primary); }
+:is(.col, .track) i.mid { background: color-mix(in srgb, var(--color-primary) 55%, white); }
+:is(.col, .track) i:is(.low, .none) { background: var(--color-muted-foreground); opacity: .55; }
 .it .y { font-size: .72rem; line-height: 1.1; white-space: nowrap; }
 .it[aria-selected="true"] .y { font-weight: 800; }
 .it.career .y { font-weight: 800; color: var(--color-primary); }
@@ -249,10 +260,6 @@ const summary = computed(() => {
 .track { grid-area: track; position: relative; height: 10px; background: var(--color-muted); border-radius: 5px; overflow: hidden; }
 .track i { position: absolute; inset: 0; transform-origin: left center; border-radius: 5px;
            transition: transform var(--dur-chart) var(--ease-out); }
-.track i.top { background: var(--color-heading); }
-.track i.high { background: var(--color-primary); }
-.track i.mid { background: color-mix(in srgb, var(--color-primary) 55%, white); }
-.track i.low, .track i.none { background: var(--color-muted-foreground); opacity: .55; }
 .ref .track i { opacity: .45; }
 /* the position average (60 of 99) as a bullet-chart marker */
 .avg { position: absolute; top: -2px; bottom: -2px; left: calc(60 / 99 * 100%); width: 2px; background: var(--color-foreground); opacity: .55; }

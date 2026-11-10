@@ -1,5 +1,6 @@
 <script setup>
-// WEB-11/12: my account. Pick favourite teams of this season, see and remove favourite players, log out, delete account.
+// WEB-11/12 내 계정 화면: 이번 시즌 팀 중 관심 팀 고르기, 관심 선수 보기·빼기, 로그아웃, 탈퇴(비밀번호 재확인).
+// 로그인한 사람만 들어올 수 있다(라우터의 requiresAuth).
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { getTeams } from '@/api/client'
@@ -10,19 +11,21 @@ import { fmtFullDate } from '@/utils/format'
 const auth = useAuthStore()
 const router = useRouter()
 const teams = ref([])
-const pending = ref('') // `${kind}:${code}` being saved
-const status = ref('')
+const pending = ref('') // 저장 중인 항목 `${kind}:${code}`(그 버튼만 잠시 비활성화)
+const status = ref('') // 화면 낭독기용 결과 안내
 const error = ref('')
 
 onMounted(async () => {
   try {
     teams.value = await getTeams()
   } catch {
-    /* the picker just stays empty */
+    /* 팀 목록을 못 받으면 고르는 칸만 비어 있다 */
   }
 })
+// 팀 버튼을 남자부/여자부로 나눠 보여 주기 위한 묶음
 const teamsBy = computed(() => ['M', 'F'].map((g) => ({ g, teams: teams.value.filter((t) => t.gender === g) })))
 
+// 관심 추가/해제
 async function toggle(kind, item) {
   pending.value = `${kind}:${item.code}`
   error.value = ''
@@ -42,7 +45,7 @@ async function logout() {
   router.replace('/')
 }
 
-// account deletion asks for the password again
+// 탈퇴는 비밀번호를 다시 묻는다(실수·남의 손 방지)
 const deleting = ref(false)
 const password = ref('')
 const deleteError = ref('')

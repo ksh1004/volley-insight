@@ -1,9 +1,11 @@
 <script setup>
-// ANL-10: how good the win predictions are. Backtest (each season predicted by a model trained only on earlier
-// seasons) against Elo, calibration (sure predictions should be right more often), this season's real results.
-// Chart fallback (no calibration chart in the design data): paired bars with the numbers and counts written out.
-// Motion: the headline numbers count up and glide when the division changes (old values stay, dimmed, until the
-// new ones arrive); calibration bars fill when first seen.
+// ANL-10 예측 검증 화면: 승패 예측이 얼마나 잘 맞는지.
+//   백테스트: 각 시즌을 '그 이전 시즌들로만 학습한 모델'로 예측한 성적을 Elo만으로 한 예측과 비교
+//   보정(calibration): 자신 있게 예측한 경기일수록 실제로 더 자주 맞아야 한다. 확신도 구간별 예측 vs 실제 적중률
+//   이번 시즌 실제 결과: 경기 전에 냈던 예측의 적중 기록
+// 차트 대안(디자인 자료에 보정 곡선 차트가 없어서): 짝지은 막대에 숫자와 경기 수를 글자로 함께 적는다.
+// 모션: 맨 위 숫자들이 세어 올라가고, 남녀부를 바꾸면 새 값으로 미끄러진다(새 값이 올 때까지 이전 값을 흐리게 유지).
+// 보정 막대는 처음 보일 때 찬다.
 import { computed, onMounted, ref, watch } from 'vue'
 import { getPredictionCheck } from '@/api/client'
 import AsyncState from '@/components/AsyncState.vue'
@@ -13,10 +15,11 @@ import AnimatedNumber from '@/motion/AnimatedNumber.vue'
 import { useInView } from '@/motion/core'
 import { fmtDate } from '@/utils/format'
 
-const gender = ref('')
+const gender = ref('') // '' = 전체, 'M' | 'F'
 const data = ref(null)
 const state = ref({ loading: true, error: null })
 
+// 검증 데이터 불러오기(이전 데이터는 지우지 않고 로딩 표시만: 화면이 비지 않게)
 async function load() {
   state.value.loading = true
   try {
@@ -31,13 +34,16 @@ async function load() {
 onMounted(load)
 watch(gender, load)
 
+// 비율(0~1) → "62.4%", 로그 손실 → 소수 셋째 자리
 const pct = (v) => (v == null ? '-' : `${(v * 100).toFixed(1)}%`)
 const ll = (v) => (v == null ? '-' : v.toFixed(3))
 const bt = computed(() => data.value?.backtest)
 const live = computed(() => data.value?.live)
+// 시즌별 '모델 vs Elo' 적중률 막대 행
 const seasonRows = computed(() => (bt.value?.seasons || []).map((s) => ({
   label: s.season.years.replace('-', '–'), a: s.model.accuracy, b: s.elo.accuracy, fmt: pct,
 })))
+// 전체 백테스트에서 모델이 Elo보다 몇 %p 더 맞혔는가
 const gain = computed(() => {
   const o = bt.value?.overall
   return o ? (o.model.accuracy - o.elo.accuracy) * 100 : null
@@ -46,6 +52,7 @@ const pctN = (v) => `${v.toFixed(1)}%`
 const llN = (v) => v.toFixed(3)
 const calibEl = ref(null)
 const calibSeen = useInView(calibEl)
+// 예측한 승자와 그 확신도(%)
 const winner = (r) => (r.home_win_prob >= 0.5 ? r.home.name : r.away.name)
 const sure = (r) => Math.round(Math.max(r.home_win_prob, 1 - r.home_win_prob) * 100)
 </script>

@@ -1,8 +1,8 @@
 <script setup>
-// Player form (ANL-08): last N games against the earlier games of the season. Up / down only when the change is
-// both clear (statistical test) and large enough to matter; the words and arrows say it, not only the colour.
-// Interaction: point at (or arrow through) the sparkline to read each game; click or Enter opens that match.
-// Motion: the line draws in when first seen and the "recent games" shading fades in after it.
+// 선수 폼(ANL-08): 최근 N경기를 그 시즌의 이전 경기들과 비교. 변화가 통계적으로 뚜렷하고 의미 있을 만큼 클 때만
+// 상승/하락으로 표시한다(backend/analytics/form.py). 색만이 아니라 글자와 화살표로도 알린다.
+// 상호작용: 작은 선 그래프(스파크라인)를 가리키거나 화살표 키로 움직이면 경기별 값을 읽어 주고, 클릭·Enter면 그 경기로 이동.
+// 모션: 처음 보일 때 선이 그려지고, '최근 경기' 음영이 뒤따라 나타난다.
 import { computed, ref, useId } from 'vue'
 import { useRouter } from 'vue-router'
 import { DURATION, ease, useInView, useTween } from '@/motion/core'
@@ -11,35 +11,42 @@ import { fmtDate } from '@/utils/format'
 const props = defineProps({ form: { type: Object, required: true } }) // /api/players/{code} `form`
 const router = useRouter()
 
+// 판정 → 화면 문구
 const TREND = { up: '상승', down: '하락', flat: '변화 없음' }
 const OVERALL = { up: '폼 상승', down: '폼 하락', mixed: '엇갈림', flat: '평소와 비슷' }
+// 지표 값 표시(세트당 득점은 소수 둘째 자리, 나머지는 %)
 const fmt = (m, v) => (m.key === 'points_per_set' ? v.toFixed(2) : `${v.toFixed(1)}%`)
 const sign = (v) => (v > 0 ? '+' : '')
 
-// sparkline: points per set of every game, last N highlighted
+// 스파크라인: 경기마다의 세트당 득점, 마지막 N경기는 강조. SVG 좌표(W×H) 안에 점을 찍어 선으로 잇는다
 const uid = useId()
 const W = 300
 const H = 64
 const series = computed(() => props.form.series)
 const pts = computed(() => series.value.map((s) => s.points_per_set))
 const max = computed(() => Math.max(1, ...pts.value))
+// i번째 경기의 가로 위치, 값의 세로 위치(위가 큰 값)
 const x = (i) => (pts.value.length > 1 ? (i / (pts.value.length - 1)) * W : W / 2)
 const y = (v) => H - 4 - (v / max.value) * (H - 8)
+// SVG path: "M x y L x y ..."
 const line = computed(() => pts.value.map((v, i) => `${i ? 'L' : 'M'} ${x(i)} ${y(v)}`).join(' '))
+// '최근 경기' 음영이 시작하는 가로 위치(경기 사이 중간)
 const splitX = computed(() => x(pts.value.length - props.form.n) - (W / Math.max(1, pts.value.length - 1)) / 2)
 const avg = (arr) => arr.reduce((a, b) => a + b, 0) / Math.max(1, arr.length)
 const beforeAvg = computed(() => avg(pts.value.slice(0, -props.form.n)))
 const recentAvg = computed(() => avg(pts.value.slice(-props.form.n)))
 
-// ---- pointed game
+// ---- 가리킨 경기
 const active = ref(null)
 const shown = computed(() => (active.value == null ? null : series.value[active.value]))
 const isRecent = (i) => i >= pts.value.length - props.form.n
+// 마우스 위치에서 가장 가까운 경기
 function onMove(e) {
   const r = e.currentTarget.getBoundingClientRect()
   const n = pts.value.length
   active.value = Math.min(n - 1, Math.max(0, Math.round(((e.clientX - r.left) / r.width) * (n - 1))))
 }
+// 키보드: ←→ 한 경기씩, Home/End 처음·끝, Enter 그 경기 열기
 function onKey(e) {
   const n = pts.value.length
   if (e.key === 'Enter' && shown.value?.match) { open(); return }
@@ -49,9 +56,10 @@ function onKey(e) {
   active.value = Math.min(n - 1, Math.max(0, (active.value ?? (moves[e.key] > 0 ? -1 : n)) + moves[e.key]))
 }
 const open = () => { if (shown.value?.match) router.push(`/matches/${shown.value.match}`) }
+// 값 말풍선의 가로 위치(양 끝에서 잘리지 않게 20~80%로 제한)
 const readoutLeft = computed(() => `${Math.min(80, Math.max(20, (x(active.value) / W) * 100))}%`)
 
-// ---- draw-in once visible
+// ---- 처음 보일 때 선 그리기(0→1 진행률. 선 길이에 곱해 stroke-dashoffset으로 그려 나감)
 const plot = ref(null)
 const seen = useInView(plot)
 const drawn = useTween(() => (seen.value ? 1 : 0), { duration: DURATION.chart, easing: ease.inOut, from: 0 })

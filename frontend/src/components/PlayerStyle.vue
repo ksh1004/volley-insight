@@ -1,8 +1,8 @@
 <script setup>
-// Player type (K-means group) and similar players (ANL-06, WEB-07).
-// The player's most distinctive features are bars from the centre (= average of the same gender), with the
-// sign and words written out so the meaning never depends on colour alone.
-// Motion: the bars grow out of the centre line when first seen; switching "같은 시즌 / 역대" slides the new list in.
+// 선수 유형(K-means 그룹)과 비슷한 선수(ANL-06, WEB-07). 선수 화면의 '선수 유형과 비슷한 선수' 카드.
+// 선수의 가장 두드러진 특징을 가운데(= 같은 성별 평균)에서 뻗는 막대로 보여 주고, 부호와 말('높음' 등)을 함께 적어
+// 색에만 의존하지 않게 한다.
+// 모션: 처음 보일 때 막대가 가운데 선에서 자라나고, '같은 시즌 / 역대'를 바꾸면 새 목록이 미끄러져 들어온다.
 import { computed, ref } from 'vue'
 import { useInView } from '@/motion/core'
 
@@ -11,25 +11,29 @@ const props = defineProps({
   season: { type: String, required: true }, // season code of the page
 })
 
+// 특징 키 → 화면 이름(spark_jobs/player_types.py의 FEATURES와 같은 키)
 const FEATURE_LABELS = {
   points_ps: '세트당 득점', attack_ps: '세트당 공격 시도', attack_rate: '공격 성공률', open_ps: '세트당 오픈 공격',
   quick_ps: '세트당 속공', back_ps: '세트당 후위 공격', ace_ps: '세트당 서브 에이스', block_ps: '세트당 블로킹',
   receive_ps: '세트당 리시브', receive_eff: '리시브 효율', dig_ps: '세트당 디그', set_ps: '세트당 세트(토스)',
   error_ps: '세트당 범실',
 }
-const RATES = new Set(['attack_rate', 'receive_eff'])
+const RATES = new Set(['attack_rate', 'receive_eff']) // 비율 특징(%로 표시), 나머지는 세트당 값
+// 특징 값 표시
 const fmt = (f, v) => (RATES.has(f) ? `${(v * 100).toFixed(1)}%` : v.toFixed(2))
 
-// the six features furthest from average, largest first
+// 평균에서 가장 멀리 떨어진 특징 6개(차이가 큰 순). better: 좋은 쪽으로 다른가(범실은 낮을수록 좋음)
 const standout = computed(() => Object.entries(props.style.z)
   .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 6)
   .map(([f, z]) => ({ f, z, label: FEATURE_LABELS[f] || f, value: fmt(f, props.style.features[f]), better: f === 'error_ps' ? z < 0 : z > 0 })))
 const barsEl = ref(null)
 const seen = useInView(barsEl)
+// 막대 길이: z 3을 끝으로 보고 비례(0~1)
 const grow = (z) => (seen.value ? Math.min(1, Math.abs(z) / 3) : 0)
+// z를 말로: 평균 수준 / 높음 / 매우 높음 / 낮음 / 매우 낮음
 const words = (z) => (Math.abs(z) < 0.5 ? '평균 수준' : z > 0 ? (z > 1.5 ? '매우 높음' : '높음') : (z < -1.5 ? '매우 낮음' : '낮음'))
 
-const scope = ref('season')
+const scope = ref('season') // 비슷한 선수 범위: 'season'(같은 시즌) | 'all'(역대)
 const list = computed(() => (scope.value === 'season' ? props.style.similar_season : props.style.similar_all))
 </script>
 

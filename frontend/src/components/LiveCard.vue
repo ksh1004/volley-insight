@@ -1,6 +1,6 @@
 <script setup>
-// A game being followed live (or replayed) on the home page: sets, current set score, serve. Links to the live page.
-// Motion: the score digits roll when the home page refreshes them (every 20 s).
+// 홈 화면의 '진행 중 경기' 카드 하나: 세트 스코어, 지금 세트 점수, 서브권(●). 누르면 실시간 화면으로 간다.
+// 모션: 홈 화면이 20초마다 새로 받아 오면 점수 숫자가 굴러간다(RollingNumber).
 import { computed } from 'vue'
 import { GENDERS, LIVE_MODES } from '@/constants/volley'
 import RollingNumber from '@/motion/RollingNumber.vue'
@@ -9,8 +9,10 @@ const props = defineProps({ item: { type: Object, required: true } }) // { match
 const m = computed(() => props.item.match)
 const s = computed(() => props.item.state)
 const finished = computed(() => s.value.status === 'FINISHED')
+// 이 팀이 지금 서브권을 가졌는가(끝난 경기는 없음)
 const serving = (code) => !finished.value && s.value.serving === code
 const status = computed(() => (finished.value ? '종료' : s.value.set_open ? `${s.value.current_set}세트` : '세트 사이'))
+// 화면 낭독기용 카드 설명 한 문장
 const label = computed(() => {
   const sets = `세트 스코어 ${s.value.home_sets} 대 ${s.value.away_sets}`
   const pts = finished.value ? '' : `, ${status.value} ${s.value.home_points} 대 ${s.value.away_points}`

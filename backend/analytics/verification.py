@@ -1,9 +1,9 @@
-"""Prediction verification (ANL-10): how good the match-winner model is, in numbers anyone can check.
+"""예측 검증(ANL-10): 승패 예측 모델이 얼마나 잘 맞히는지를 누구나 확인할 수 있는 숫자로 보여 준다.
 
-  backtest   each of the last seasons predicted by a model trained only on the seasons before it (walk-forward,
-             spark_jobs/train_model.py -> prediction_backtest), next to the pre-match Elo probability
-  live       pre-match predictions of this season's games that are over (match_prediction.is_correct)
-  calibration  of the backtest: grouped by how sure the model was, how often it was right
+  backtest     최근 시즌들을 각각 '그 이전 시즌들로만 학습한 모델'로 예측한 결과(워크포워드,
+               spark_jobs/train_model.py → prediction_backtest). 같은 경기의 경기 전 Elo 확률과 나란히 비교
+  live         이번 시즌 끝난 경기에 대해 경기 전에 실제로 냈던 예측의 적중 여부(match_prediction.is_correct)
+  calibration  백테스트를 '모델이 얼마나 확신했나' 구간으로 묶어, 예측한 확률과 실제 적중률을 비교(보정 곡선)
 """
 import math
 
@@ -12,12 +12,13 @@ from matches.serializers import match_key, team_ref
 
 from .models import MatchPrediction, ModelVersion, PredictionBacktest
 
-EPS = 1e-6
+EPS = 1e-6  # log(0) 방지
+# 확신도 구간(이긴다고 본 쪽의 확률): 50~55%, 55~60%, ... 80% 이상
 BINS = [(0.5, 0.55), (0.55, 0.6), (0.6, 0.65), (0.65, 0.7), (0.7, 0.8), (0.8, 1.01)]
 
 
 def _metrics(pairs):
-    """pairs: [(home win probability, home won)] -> accuracy, log loss, Brier."""
+    """[(홈 승리 확률, 홈이 이겼나)] → 적중률, 로그 손실, Brier(낮을수록 좋음)."""
     n = len(pairs)
     if not n:
         return {"n": 0, "accuracy": None, "log_loss": None, "brier": None}
@@ -28,7 +29,7 @@ def _metrics(pairs):
 
 
 def calibration(pairs):
-    """Confidence (probability of the predicted winner) in bins -> predicted vs actual hit rate."""
+    """확신도(예측한 승자의 확률) 구간마다 → 평균 예측 확률과 실제 적중률. 잘 맞춰진 모델은 둘이 비슷하다."""
     out = []
     for lo, hi in BINS:
         rows = [(max(p, 1 - p), (p >= 0.5) == won) for p, won in pairs if lo <= max(p, 1 - p) < hi]
@@ -40,6 +41,8 @@ def calibration(pairs):
 
 
 def summary(gender=None):
+    """예측 검증 화면의 모든 숫자. 백테스트는 백테스트 결과가 있는 가장 최신 모델 버전 기준.
+    gender를 주면 그 성별 경기만 센다."""
     version = (ModelVersion.objects.filter(name="match-winner", backtests__isnull=False).order_by("-version").first()
                or ModelVersion.objects.filter(name="match-winner").order_by("-version").first())
     champion = ModelVersion.objects.filter(name="match-winner", alias="champion").first()

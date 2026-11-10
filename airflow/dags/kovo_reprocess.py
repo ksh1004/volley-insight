@@ -1,19 +1,19 @@
-"""kovo_reprocess: re-collect and/or re-curate chosen games, days or seasons (PIPE-08, ADM-02). Manual run.
+"""kovo_reprocess: 고른 경기·날짜·시즌을 다시 수집하거나 다시 정제한다(PIPE-08, ADM-02). 손으로 실행.
 
-Started from Django admin "수동 실행" (or Airflow "Trigger DAG w/ config"). Give at least one target:
-  games      "023-9, 023-10"                  season-game numbers
-  dates      "2026-11-05" or "2026-11-01~2026-11-05"   games scheduled on those days (KST), 31 days at most
-  seasons    "023" or "020-022"               whole seasons, re-curated from the raw data only
-  recollect  true: fetch the games (from games/dates) from KOVO again, even CONFIRMED ones, e.g. after KOVO
-             corrected a record. false: no KOVO request, only re-curate their seasons from HDFS /raw/.
+Django 관리자 '수동 실행' 화면(또는 Airflow의 "Trigger DAG w/ config")에서 시작한다. 대상을 하나 이상 준다:
+  games      "023-9, 023-10"                  시즌-경기번호
+  dates      "2026-11-05" 또는 "2026-11-01~2026-11-05"   그날(서울 시각) 예정된 경기들, 최대 31일
+  seasons    "023" 또는 "020-022"             시즌 전체를 원본 데이터로만 다시 정제
+  recollect  true: (games/dates의) 경기를 KOVO에서 다시 받는다. CONFIRMED 경기도 포함(예: KOVO가 기록을 고친 뒤).
+             false: KOVO 요청 없이 그 시즌들을 HDFS /raw/로 다시 정제만 한다.
 
-  1. plan: resolve the targets (dates -> games through PostgreSQL)
-  2. collect (recollect only): that season's schedule + box scores and play-by-play of the finished targets
-  3. wait until raw-archiver has written them to HDFS
-  4. Spark curation of every affected season from all of its raw data (latest fetch of each game wins, COL-09),
-     with admin corrections and quality checks
-  5. analysis marts, then the status of each target game in the log
-Seasons are curated whole because curation is per season; re-collecting a whole season is kovo_backfill.
+  1. plan: 대상을 정한다(날짜 → PostgreSQL로 그날 경기 찾기)
+  2. collect(recollect일 때만): 그 시즌 일정 + 끝난 대상 경기의 박스스코어와 문자중계
+  3. raw-archiver가 HDFS에 쓸 때까지 기다림
+  4. 영향받은 시즌마다 그 시즌의 모든 원본으로 Spark 정제(경기마다 가장 최근 수집본이 이김, COL-09),
+     관리자 보정과 품질 검사 포함
+  5. 분석 마트, 그리고 대상 경기마다의 상태를 로그에 남김
+정제는 시즌 단위라 시즌 전체를 다시 정제한다. 시즌 전체를 다시 '수집'하려면 kovo_backfill을 쓴다.
 """
 from datetime import date
 
@@ -24,7 +24,7 @@ from airflow.sdk import Param, dag, get_current_context, task
 from kovo_tasks import alerts
 from kovo_tasks import pipeline as p
 
-MAX_RECOLLECT = 50  # about 6 KOVO requests per game at 1 req/s; more than this is a backfill
+MAX_RECOLLECT = 50  # 경기당 KOVO 요청 약 6번(1초 1회). 이보다 많으면 백필로 할 일이다
 
 
 @dag(
@@ -47,6 +47,8 @@ MAX_RECOLLECT = 50  # about 6 KOVO requests per game at 1 req/s; more than this 
 def kovo_reprocess():
     @task(retries=0)
     def plan() -> dict:
+        """파라미터를 검사하고 대상을 정한다: {games: {시즌: [경기번호]}, seasons: 정제할 시즌들, recollect}.
+        형식이 틀리거나 대상이 없으면 바로 실패(재시도 없음)하고, 그 메시지가 관리자 화면에 보인다."""
         params = get_current_context()["params"]
         try:
             games = p.parse_games(params.get("games") or "")
@@ -68,6 +70,7 @@ def kovo_reprocess():
 
     @task(max_active_tis_per_dag=1)
     def collect(target: dict) -> dict:
+        """recollect면 대상 경기를 다시 수집한다. KOVO 일정상 아직 안 끝난 경기는 건너뛰고 로그에 남긴다."""
         batches, keys, skipped = [], [], []
         if target["recollect"]:
             for season, gnums in target["games"].items():
@@ -85,18 +88,22 @@ def kovo_reprocess():
 
     @task.sensor(poke_interval=60, timeout=3600, mode="reschedule")
     def wait_for_raw(result: dict) -> bool:
+        """보낸 메시지가 모두 HDFS에 보관됐는가(보낸 게 없으면 바로 통과)."""
         return p.raw_arrived(result["batches"])
 
     @task(max_active_tis_per_dag=1)
     def curate(result: dict):
+        """영향받은 시즌들을 정제한다."""
         p.run_curation(result["seasons"])
 
     @task
     def build_marts():
+        """분석 마트를 다시 만든다."""
         p.run_marts()
 
     @task
     def report(result: dict):
+        """대상 경기들의 최종 상태를 로그로 남긴다(관리자가 결과를 확인하는 곳)."""
         for season, gnum, scheduled_at, status in p.game_report(result["games"]):
             print(f"{season}-{gnum} {scheduled_at:%Y-%m-%d %H:%M} {status}")
         print("curated seasons:", ", ".join(result["seasons"]))

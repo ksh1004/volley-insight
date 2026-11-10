@@ -1,7 +1,8 @@
 <script setup>
-// Header search with autocomplete (WEB-10). ARIA 1.2 combobox: the input owns a listbox of teams/players;
-// arrow keys move the active option, Enter opens it (or the full search page when none is active),
-// Escape closes. Suggestions are fetched 200 ms after typing stops; a newer request cancels the older one.
+// 머리글의 검색창과 자동완성(WEB-10). ARIA 1.2 콤보박스 규칙을 따른다(화면 낭독기·키보드 사용자를 위해):
+//   입력칸이 팀/선수 목록(listbox)을 가지고, ↑↓로 선택 항목을 옮기고, Enter로 연다(선택이 없으면 전체 검색 화면),
+//   Esc로 닫는다(닫혀 있으면 입력 지우기).
+// 제안은 입력이 멈추고 200ms 뒤에 요청한다(디바운스: 글자마다 요청하지 않음). 새 요청은 이전 요청을 취소한다.
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { suggest } from '@/api/client'
@@ -14,18 +15,20 @@ const items = ref([])
 const open = ref(false)
 const active = ref(-1)
 const loading = ref(false)
-let timer = null
-let controller = null
+let timer = null // 디바운스 타이머
+let controller = null // 진행 중인 요청을 취소하기 위한 AbortController
 
 const listId = 'search-suggest'
 const optionId = (i) => `search-opt-${i}`
 const expanded = computed(() => open.value && q.value.trim().length > 0)
 
+// 제안 항목 아래 작은 설명: "팀 · 남자부" 또는 "선수 · 소속 팀 · 포지션"
 function describe(it) {
   if (it.type === 'team') return `팀 · ${GENDERS[it.gender] || ''}`
   return ['선수', it.team_name, POSITIONS[it.position] || it.position].filter(Boolean).join(' · ')
 }
 
+// 입력이 바뀌면 200ms 뒤에 제안을 요청(그 사이 또 바뀌면 타이머를 다시 시작)
 watch(q, (v) => {
   clearTimeout(timer)
   active.value = -1
@@ -41,17 +44,19 @@ async function fetchSuggest() {
     items.value = (await suggest(q.value.trim(), controller.signal)).results || []
     open.value = true
   } catch (e) {
-    if (e.name !== 'CanceledError') items.value = []
+    if (e.name !== 'CanceledError') items.value = [] // 취소된 요청은 오류가 아니다
   } finally {
     loading.value = false
   }
 }
 
+// 제안 항목 열기: 팀 화면 또는 선수 화면으로
 function go(it) {
   open.value = false
   router.push(it.type === 'team' ? `/teams/${it.code}` : `/players/${it.code}`)
 }
 
+// Enter: 선택된 제안이 있으면 그것을, 없으면 전체 검색 화면으로
 function submit() {
   const text = q.value.trim()
   if (active.value >= 0 && items.value[active.value]) return go(items.value[active.value])
@@ -72,11 +77,12 @@ function onKey(e) {
   }
 }
 
-// close when focus leaves the whole widget (clicking an option keeps it until the click lands)
+// 포커스가 위젯 전체를 벗어나면 닫는다(항목을 클릭할 때는 클릭이 끝날 때까지 열어 둠)
 function onFocusOut(e) {
   if (!e.currentTarget.contains(e.relatedTarget)) open.value = false
 }
 
+// 다른 화면으로 가면 닫고, 검색 화면이 아니면 입력도 비운다
 watch(() => route.fullPath, () => { open.value = false; if (route.name !== 'search') q.value = '' })
 onBeforeUnmount(() => { clearTimeout(timer); controller?.abort() })
 </script>

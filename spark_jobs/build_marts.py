@@ -1,61 +1,64 @@
-"""Analysis marts from the curated tables (design.md DFD 3.4-3.5): ANL-01, ANL-02, ANL-05, ANL-11.
+"""정제 테이블로 분석용 마트(요약 테이블)를 만든다(설계서 DFD 3.4~3.5): ANL-01, ANL-02, ANL-05, ANL-11.
 
-  HDFS /curated/kovo/{match,set_score,team_match_stat,player_match_stat,rally_event}  (all seasons)
-    -> team_rating            Elo after every finished match
-    -> team_season_summary    record, rank, indicators, side-out / break rate per competition,
-                              attack after good / poor reception and clutch rallies (20:20+) from play-by-play
-    -> player_season_summary  indicators + percentile within position per competition
-    -> HDFS /marts/kovo/{table}/ (Parquet) and PostgreSQL (one transaction, sql/merge_marts.sql)
-    -> HDFS /marts/kovo/match_elo/  pre-match Elo of every match incl. upcoming ones (input of build_features.py)
+  HDFS /curated/kovo/{match,set_score,team_match_stat,player_match_stat,rally_event}  (모든 시즌)
+    → team_rating            끝난 경기마다의 팀 Elo 점수(전력 지수)
+    → team_season_summary    대회별 팀 성적·순위·지표, 사이드아웃/브레이크율,
+                             문자중계로 계산한 리시브 정확 뒤/아닐 때 공격 성공률과 접전(20:20 이후) 랠리 승률
+    → player_season_summary  대회별 선수 지표 + 같은 포지션 안의 백분위
+    → HDFS /marts/kovo/{테이블}/ (Parquet) 과 PostgreSQL (한 트랜잭션, sql/merge_marts.sql)
+    → HDFS /marts/kovo/match_elo/  모든 경기(예정 경기 포함)의 경기 전 Elo (build_features.py의 입력)
 
-Recomputed from all seasons on every run (a few seconds of work; Elo depends on the whole history).
+매번 모든 시즌을 처음부터 다시 계산한다(몇 초면 끝나고, Elo는 전체 역사에 따라 달라지므로).
 
-Elo: 1500 start; K = 24 x (1, 1.25, 1.5) for a 1-, 2-, 3-set margin; home advantage from the home win rate
-of all matches; at a team's first match of a new season its rating moves a third of the way back to 1500.
+Elo 규칙: 시작 1500점. K = 24 × (1, 1.25, 1.5) — 세트 차가 1·2·3일 때. 홈 이점은 전체 경기의 홈 승률에서 구한다.
+새 시즌 첫 경기 때 점수를 1500 쪽으로 3분의 1만큼 되돌린다(선수 이동 등으로 전력이 섞이는 것을 반영).
+  (Elo: 이길 확률을 점수 차로 예측하고, 결과가 예측보다 좋으면 오르고 나쁘면 내리는 평가 방식)
 
-Run: docker compose exec airflow sh /opt/airflow/spark_jobs/submit.sh build_marts.py
+실행: docker compose exec airflow sh /opt/airflow/spark_jobs/submit.sh build_marts.py (평소에는 kovo_daily 등 DAG)
 """
 import json
 import math
 import os
 from pathlib import Path
 
-import psycopg2
 from pyspark.sql import SparkSession, Window
 from pyspark.sql import functions as F
 
 CURATED = os.environ.get("CURATED_PATH", "hdfs://namenode:9000/curated/kovo")
 MARTS = os.environ.get("MARTS_PATH", "hdfs://namenode:9000/marts/kovo")
 MERGE_SQL = Path(__file__).resolve().parent / "sql" / "merge_marts.sql"
-FINISHED = ["FINISHED", "CONFIRMED"]
-REGULAR = "201"
+FINISHED = ["FINISHED", "CONFIRMED"]  # 끝난 경기 상태(CONFIRMED = 품질 검사까지 통과)
+REGULAR = "201"  # 정규리그 리그 코드
 
-ELO_START, ELO_K, SEASON_CARRY = 1500.0, 24.0, 2 / 3
-MIN_SET_SHARE = 1 / 3  # same qualification rule as the player rankings (backend/league/standings.py)
-# indicator -> higher is better? (errors: lower is better)
+ELO_START, ELO_K, SEASON_CARRY = 1500.0, 24.0, 2 / 3  # 시작 점수, 기본 K, 새 시즌에 남기는 비율
+MIN_SET_SHARE = 1 / 3  # 순위 자격: 팀 세트의 1/3 이상 출전(선수 순위와 같은 규칙, backend/league/standings.py)
+# 지표 → 높을수록 좋은가? (범실은 낮을수록 좋음). 백분위를 매길 방향을 정한다
 INDICATORS = {"attack_success_rate": True, "attack_efficiency": True, "receive_efficiency": True,
               "block_per_set": True, "serve_per_set": True, "dig_per_set": True, "set_per_set": True,
               "error_per_set": False}
 
 
 def read(spark, name):
+    """정제 테이블 하나를 읽는다."""
     return spark.read.parquet(f"{CURATED}/{name}")
 
 
-# ---------------------------------------------------------------- Elo (driver side: needs match order)
+# ---------------------------------------------------------------- Elo (경기 순서대로 계산해야 해서 드라이버에서 실행)
 def elo(matches, upcoming=()):
-    """matches: finished rows ordered by time with season_code, game_no, gender, home_code, away_code, home_sets,
-    away_sets, game_date. upcoming: scheduled rows (season_code, game_no, home_code, away_code).
-    Returns (rating rows, pre-match rows, summary dict). Pre-match rows hold each match's ratings *before* it
-    was played (for upcoming matches: the current ratings), the prediction features of the next step."""
+    """Elo를 경기 순서대로 갱신한다.
+    matches: 시간순으로 정렬된 끝난 경기 행(season_code, game_no, gender, home_code, away_code, home_sets,
+    away_sets, game_date). upcoming: 예정 경기 행(season_code, game_no, home_code, away_code).
+    돌려주는 값: (점수 행들, 경기 전 행들, 요약 딕셔너리). '경기 전 행'은 각 경기를 치르기 *전*의 두 팀 점수다
+    (예정 경기는 지금 점수). 다음 단계(예측 특징)에서 결과를 미리 보지 않은 값으로 쓰인다."""
     rows = list(matches)
     home_rate = sum(r.home_sets > r.away_sets for r in rows) / max(1, len(rows))
+    # 홈 승률을 Elo 점수 차로 환산한 홈 이점(예: 홈 승률 55% ≈ +35점)
     home_adv = -400 * math.log10(1 / home_rate - 1) if 0 < home_rate < 1 else 0.0
-    rating, season_of = {}, {}
+    rating, season_of = {}, {}  # 팀 → 지금 점수, 팀 → 그 점수가 속한 시즌
     out, pre, hits, log_loss = [], [], 0, 0.0
 
     def current(team, season):
-        """Rating a team brings into a match of `season` (new season: pulled back toward the mean)."""
+        """팀이 `season` 경기에 들고 들어가는 점수(새 시즌이면 평균 쪽으로 되돌린 값). 처음 보는 팀은 1500."""
         if team not in rating:
             return ELO_START
         if season_of[team] != season:
@@ -67,18 +70,18 @@ def elo(matches, upcoming=()):
             rating[t] = current(t, r.season_code)
             season_of[t] = r.season_code
         rh, ra = rating[r.home_code], rating[r.away_code]
-        p_home = 1 / (1 + 10 ** ((ra - rh - home_adv) / 400))
+        p_home = 1 / (1 + 10 ** ((ra - rh - home_adv) / 400))  # Elo 공식: 홈이 이길 확률
         pre.append((r.season_code, r.game_no, round(rh, 2), round(ra, 2), round(p_home, 4)))
         home_won = r.home_sets > r.away_sets
         hits += (p_home >= 0.5) == home_won
         log_loss -= math.log(p_home if home_won else 1 - p_home)
-        k = ELO_K * (1 + 0.25 * (abs(r.home_sets - r.away_sets) - 1))
-        change = k * ((1.0 if home_won else 0.0) - p_home)
+        k = ELO_K * (1 + 0.25 * (abs(r.home_sets - r.away_sets) - 1))  # 세트 차가 클수록 크게 움직인다
+        change = k * ((1.0 if home_won else 0.0) - p_home)  # (실제 결과 - 예상) × K, 홈이 얻은 만큼 원정이 잃는다
         rating[r.home_code] = rh + change
         rating[r.away_code] = ra - change
         for team, new, delta, p in ((r.home_code, rh + change, change, p_home), (r.away_code, ra - change, -change, 1 - p_home)):
             out.append((r.season_code, r.game_no, team, r.game_date, round(new, 2), round(delta, 2), round(p, 4)))
-    for u in upcoming:  # not played yet: today's ratings, nothing is updated
+    for u in upcoming:  # 아직 안 치른 경기: 지금 점수만 기록하고 아무것도 갱신하지 않는다
         rh, ra = current(u.home_code, u.season_code), current(u.away_code, u.season_code)
         pre.append((u.season_code, u.game_no, round(rh, 2), round(ra, 2),
                     round(1 / (1 + 10 ** ((ra - rh - home_adv) / 400)), 4)))
@@ -87,9 +90,11 @@ def elo(matches, upcoming=()):
                  "elo_accuracy": round(hits / n, 4), "elo_log_loss": round(log_loss / n, 4)}
 
 
-# ---------------------------------------------------------------- side-out / break (ANL-11)
+# ---------------------------------------------------------------- 사이드아웃 / 브레이크 (ANL-11)
+# 사이드아웃 = 상대 서브를 받은 랠리를 이기는 것, 브레이크 = 내가 서브한 랠리를 이기는 것
 def serve_receive(rally, matches):
-    """Per (season, league, team): rallies served / won while serving, received / won while receiving."""
+    """(시즌, 리그, 팀)마다: 서브한 랠리 수 / 그중 이긴 수(breaks), 리시브한 랠리 수 / 그중 이긴 수(sideouts).
+    랠리의 서버 = 그 랠리 첫 서브 이벤트의 팀, 승자 = +1 이벤트의 팀."""
     first_serve = (rally.where(F.col("action_code").isin("VV", "VS"))
                    .groupBy("season_code", "game_no", "set_no", "rally_no")
                    .agg(F.min_by("team_code", "event_no").alias("server")))
@@ -108,15 +113,16 @@ def serve_receive(rally, matches):
         F.sum(F.when(~serving & won, 1).otherwise(0)).alias("sideouts"))
 
 
-ATTACKS = ["AA", "AC", "AT", "AE", "AQ", "AW", "AZ"]
+ATTACKS = ["AA", "AC", "AT", "AE", "AQ", "AW", "AZ"]  # 공격 동작 코드들
 
 
 def rally_situations(rally, matches):
-    """Per (season, league, team), from play-by-play (ANL-11):
-      first attack after the team's own reception: kills when the reception was excellent (RR exc) vs any other
-      clutch rallies: started at 20:20 or later (10:10 in set 5), and how many the team won"""
+    """(시즌, 리그, 팀)마다 문자중계로 계산하는 상황별 효율(ANL-11):
+      리시브 직후 첫 공격: 리시브가 정확(RR exc)했을 때와 아닐 때 각각의 공격 성공률
+      접전 랠리: 20:20 이후(5세트는 10:10 이후)에 시작한 랠리 수와 그중 이긴 비율"""
     keys = ["season_code", "game_no", "set_no", "rally_no"]
-    plays = rally.where((F.col("rally_no") > 0) & (F.col("rally_no") < 200))  # 0 = set start, 200 = set end marker
+    plays = rally.where((F.col("rally_no") > 0) & (F.col("rally_no") < 200))  # 0 = 세트 시작, 200 = 세트 끝 표시
+    # 팀의 리시브(RR) 결과와 그 이벤트 위치 → 그 뒤 같은 팀의 첫 공격이 득점(suc)했는지
     rec = (plays.where(F.col("action_code") == "RR").groupBy(*keys, "team_code")
            .agg(F.min_by("result_code", "event_no").alias("rec"), F.min("event_no").alias("rec_no")))
     att = plays.where(F.col("action_code").isin(ATTACKS)).select(*keys, "team_code", F.col("event_no").alias("att_no"),
@@ -129,19 +135,24 @@ def rally_situations(rally, matches):
         F.sum((F.col("rec") != "exc").cast("int")).alias("poor_n"),
         F.sum(F.when(F.col("rec") != "exc", F.col("kill")).otherwise(0)).alias("poor_kill"))
 
+    # 랠리마다 끝난 뒤 점수와 승자 → 직전 랠리 끝 점수(= 이 랠리 시작 점수)로 접전 여부 판단
     rallies = plays.groupBy(*keys).agg(
         F.max("home_score").alias("h_end"), F.max("away_score").alias("a_end"),
-        F.first(F.when(F.col("grade") > 0, F.col("team_code")), ignorenulls=True).alias("winner"))         .where(F.col("winner").isNotNull())
+        F.first(F.when(F.col("grade") > 0, F.col("team_code")), ignorenulls=True).alias("winner")) \
+        .where(F.col("winner").isNotNull())
     w = Window.partitionBy("season_code", "game_no", "set_no").orderBy("rally_no")
-    rallies = rallies.withColumn("h0", F.coalesce(F.lag("h_end").over(w), F.lit(0)))         .withColumn("a0", F.coalesce(F.lag("a_end").over(w), F.lit(0)))
+    rallies = rallies.withColumn("h0", F.coalesce(F.lag("h_end").over(w), F.lit(0))) \
+        .withColumn("a0", F.coalesce(F.lag("a_end").over(w), F.lit(0)))
     line = F.when(F.col("set_no") == 5, 10).otherwise(20)
     clutch = rallies.where((F.col("h0") >= line) & (F.col("a0") >= line))
     m = matches.select("season_code", "game_no", "league_code", "home_code", "away_code")
     clutch_team = clutch.join(m, ["season_code", "game_no"]).select(
-        "season_code", "game_no", "winner", F.explode(F.array("home_code", "away_code")).alias("team_code"))         .groupBy("season_code", "game_no", "team_code").agg(
+        "season_code", "game_no", "winner", F.explode(F.array("home_code", "away_code")).alias("team_code")) \
+        .groupBy("season_code", "game_no", "team_code").agg(
             F.count("*").alias("clutch_n"), F.sum((F.col("winner") == F.col("team_code")).cast("int")).alias("clutch_won"))
 
-    per_match = after.join(clutch_team, ["season_code", "game_no", "team_code"], "full")         .join(m.select("season_code", "game_no", "league_code"), ["season_code", "game_no"])
+    per_match = after.join(clutch_team, ["season_code", "game_no", "team_code"], "full") \
+        .join(m.select("season_code", "game_no", "league_code"), ["season_code", "game_no"])
     sums = per_match.groupBy("season_code", "league_code", "team_code").agg(
         *[F.sum(F.coalesce(c, F.lit(0))).alias(c) for c in ("good_n", "good_kill", "poor_n", "poor_kill", "clutch_n", "clutch_won")])
     pct = lambda a, b: F.when(F.col(b) > 0, F.round(100 * F.col(a) / F.col(b), 2))  # noqa: E731
@@ -152,8 +163,10 @@ def rally_situations(rally, matches):
                        pct("clutch_won", "clutch_n").alias("clutch_win_rate"))
 
 
-# ---------------------------------------------------------------- indicators
+# ---------------------------------------------------------------- 지표
 def rate_columns(prefix=""):
+    """합계 컬럼들로 비율 지표 컬럼 식을 만든다(팀·선수 공용). 백분율은 소수 둘째 자리, 세트당은 셋째 자리.
+    공격 효율 = (성공 - 막힘 - 범실) / 시도, 리시브 효율 = (정확 - 실패) / 시도."""
     c = lambda name: F.col(prefix + name)  # noqa: E731
     pct = lambda a, b: F.when(b > 0, F.round(100 * a / b, 2))  # noqa: E731
     per_set = lambda a: F.when(c("sets") > 0, F.round(a / c("sets"), 3))  # noqa: E731
@@ -169,11 +182,14 @@ def rate_columns(prefix=""):
     ]
 
 
+# 경기별 기록에서 더해 갈 항목들
 SUMS = ["attack_attempts", "attack_success", "attack_blocked", "attack_errors", "serve_aces", "block_success",
         "receive_attempts", "receive_excellent", "receive_errors", "dig_success", "set_success", "errors"]
 
 
 def team_summaries(matches, sets, team_stats, ratings, sr, situations):
+    """team_season_summary 행: 승패·승점·세트·점수, 정규리그 순위, 비율 지표, 시즌 마지막 Elo,
+    사이드아웃/브레이크율, 상황별 효율을 (시즌, 리그, 팀)마다 하나로 합친다."""
     m = matches.select("season_code", "game_no", "league_code", "home_code", "away_code", "home_sets", "away_sets")
     pts = sets.groupBy("season_code", "game_no").agg(F.sum("home_points").alias("hp"), F.sum("away_points").alias("ap"))
     m = m.join(pts, ["season_code", "game_no"], "left")
@@ -184,6 +200,7 @@ def team_summaries(matches, sets, team_stats, ratings, sr, situations):
                          F.struct(F.col("away_code").alias("team_code"), F.col("away_sets").alias("ws"), F.col("home_sets").alias("ls"),
                                   F.col("ap").alias("wp"), F.col("hp").alias("lp")))).alias("s")).select(
         "season_code", "league_code", "game_no", "s.*")
+    # V-리그 승점: 3:0·3:1 승 3점, 3:2 승 2점, 2:3 패 1점, 그 외 패 0점
     win_points = (F.when((F.col("ws") == 3) & (F.col("ls") <= 1), 3).when(F.col("ws") == 3, 2)
                   .when((F.col("ws") == 2) & (F.col("ls") == 3), 1).otherwise(0))
     record = sides.groupBy("season_code", "league_code", "team_code").agg(
@@ -191,13 +208,13 @@ def team_summaries(matches, sets, team_stats, ratings, sr, situations):
         F.sum((F.col("ws") < F.col("ls")).cast("int")).alias("losses"), F.sum(win_points).alias("win_points"),
         F.sum("ws").alias("sets_won"), F.sum("ls").alias("sets_lost"),
         F.sum(F.coalesce("wp", F.lit(0))).alias("points_won"), F.sum(F.coalesce("lp", F.lit(0))).alias("points_lost"))
-    # rank inside the regular season (same order as the standings API; head-to-head not applied)
+    # 정규리그 순위(순위 API와 같은 기준: 승점 → 승수 → 세트 득실률 → 점수 득실률. 상대 전적은 적용 안 함)
     order = Window.partitionBy("season_code", "league_code", "gender").orderBy(
         F.desc("win_points"), F.desc("wins"),
         F.desc(F.col("sets_won") / F.greatest(F.col("sets_lost"), F.lit(0.0001))),
         F.desc(F.col("points_won") / F.greatest(F.col("points_lost"), F.lit(0.0001))))
     gender = matches.select("season_code", "league_code", F.explode(F.array("home_code", "away_code")).alias("team_code"),
-                            "gender").distinct()  # a semi play-off team may only play away
+                            "gender").distinct()  # 준플레이오프 팀은 원정 경기만 했을 수도 있어 양쪽에서 모은다
     record = record.join(gender, ["season_code", "league_code", "team_code"], "left") \
         .withColumn("rank", F.when(F.col("league_code") == REGULAR, F.rank().over(order)))
 
@@ -215,12 +232,16 @@ def team_summaries(matches, sets, team_stats, ratings, sr, situations):
                    F.when(F.col("received") > 0, F.round(100 * F.col("sideouts") / F.col("received"), 2)).alias("sideout_rate"),
                    F.when(F.col("served") > 0, F.round(100 * F.col("breaks") / F.col("served"), 2)).alias("break_rate"))
     keys = ["season_code", "league_code", "team_code"]
-    return record.drop("gender").join(box, keys, "left").join(sr, keys, "left").join(final, keys, "left")         .join(situations, keys, "left")
+    return record.drop("gender").join(box, keys, "left").join(sr, keys, "left").join(final, keys, "left") \
+        .join(situations, keys, "left")
 
 
 def player_summaries(matches, player_stats):
+    """player_season_summary 행: (시즌, 리그, 성별, 선수, 팀)마다 합계·비율 지표·순위 자격,
+    그리고 같은 대회·성별·포지션의 자격 선수 안에서 지표별 백분위(JSON)."""
     m = matches.select("season_code", "game_no", "league_code", "gender", "home_code", "away_code", "home_sets", "away_sets")
     p = player_stats.join(m, ["season_code", "game_no"]).where(F.col("played_sets") != "00000")
+    # 출전 세트 수 = "11100" 같은 문자열에서 '1'의 개수(전체 길이 - '1'을 지운 길이)
     sets_played = F.length("played_sets") - F.length(F.regexp_replace("played_sets", "1", ""))
     agg = p.groupBy("season_code", "league_code", "gender", "player_code", "team_code").agg(
         F.count("*").alias("matches"), F.sum(sets_played).alias("sets"), F.sum("points").alias("points"),
@@ -234,7 +255,7 @@ def player_summaries(matches, player_stats):
     agg = agg.select("season_code", "league_code", "gender", "player_code", "team_code",
                      F.coalesce("position", F.lit("")).alias("position"), "matches", "sets", "points", "qualified",
                      *rate_columns())
-    # percentile among qualified players of the same competition, gender and position
+    # 같은 대회·성별·포지션의 자격 선수 안에서 백분위(0~100. 높을수록 좋게: 범실은 반대로 정렬)
     peers = Window.partitionBy("season_code", "league_code", "gender", "position", "qualified")
     pct_cols = []
     for name, higher_better in INDICATORS.items():
@@ -248,32 +269,10 @@ def player_summaries(matches, player_stats):
         .drop(*[f"p_{n}" for n in INDICATORS])
 
 
-# ---------------------------------------------------------------- PostgreSQL
-def load(spark, tables):
-    host, port = os.environ.get("POSTGRES_HOST", "postgres"), os.environ.get("POSTGRES_PORT", "5432")
-    db, user, password = os.environ.get("SERVICE_DB", "service"), os.environ["POSTGRES_USER"], os.environ["POSTGRES_PASSWORD"]
-    connect = lambda: psycopg2.connect(host=host, port=port, dbname=db, user=user, password=password)  # noqa: E731
-    schema = "staging_" + "".join(ch if ch.isalnum() else "_" for ch in spark.sparkContext.applicationId.lower())
-    conn = connect()
-    conn.autocommit = True
-    conn.cursor().execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
-    try:
-        url = f"jdbc:postgresql://{host}:{port}/{db}?rewriteBatchedInserts=true"
-        for name, df in tables.items():
-            df.write.format("jdbc").mode("overwrite").options(
-                url=url, dbtable=f"{schema}.{name}", user=user, password=password,
-                driver="org.postgresql.Driver", batchsize="5000").save()
-        with connect() as tx, tx.cursor() as cur:  # one transaction
-            cur.execute("SELECT pg_advisory_xact_lock(hashtext('merge_marts'))")
-            cur.execute(MERGE_SQL.read_text(encoding="utf-8").replace("staging.", f"{schema}."))
-            for row in cur.fetchall() if cur.description else []:
-                print("merge:", *row)
-    finally:
-        conn.cursor().execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
-        conn.close()
-
-
 def main():
+    """정제 테이블 읽기 → Elo → 팀·선수 요약 → HDFS 마트 저장 → PostgreSQL 병합."""
+    from pg_merge import load_and_merge  # 드라이버에서만 쓴다(airflow 컨테이너의 client 모드)
+
     spark = (SparkSession.builder.appName("build-marts")
              .config("spark.sql.session.timeZone", "Asia/Seoul")
              .config("spark.sql.sources.partitionColumnTypeInference.enabled", "false")
@@ -282,7 +281,8 @@ def main():
     sets, team_stats = read(spark, "set_score"), read(spark, "team_match_stat")
     player_stats, rally = read(spark, "player_match_stat"), read(spark, "rally_event")
 
-    upcoming = read(spark, "match").where(F.col("status").isin("SCHEDULED", "LIVE"))         .select("season_code", "game_no", "home_code", "away_code").collect()
+    upcoming = read(spark, "match").where(F.col("status").isin("SCHEDULED", "LIVE")) \
+        .select("season_code", "game_no", "home_code", "away_code").collect()
     rating_rows, pre_rows, info = elo(
         matches.select("season_code", "game_no", "gender", "home_code", "away_code", "home_sets", "away_sets",
                        "game_date", "start_time")
@@ -302,10 +302,12 @@ def main():
     print("rows:", {k: v.count() for k, v in tables.items()})
     for name, df in tables.items():
         df.write.mode("overwrite").parquet(f"{MARTS}/{name}")
-    # pre-match Elo of every match (finished and upcoming): input of build_features.py, not loaded into PostgreSQL
+    # 모든 경기(끝난 경기와 예정 경기)의 경기 전 Elo: build_features.py의 입력. PostgreSQL에는 넣지 않는다
     spark.createDataFrame(pre_rows, "season_code string, game_no int, home_elo double, away_elo double, "
                                     "elo_home_win_prob double").write.mode("overwrite").parquet(f"{MARTS}/match_elo")
-    load(spark, tables)
+    # staging 테이블 적재 + sql/merge_marts.sql 실행을 한 트랜잭션으로(pg_merge.py 참고)
+    for row in load_and_merge(spark, tables, MERGE_SQL, "merge_marts"):
+        print("merge:", *row)
     spark.stop()
 
 

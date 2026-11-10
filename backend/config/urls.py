@@ -1,3 +1,10 @@
+"""URL 라우팅: 모든 API 주소와 담당 뷰의 목록(설계서의 API 표와 같다).
+
+  /admin/          Django 관리자(데이터 운영, 모델 관리 등)
+  /api/...         Vue 화면이 부르는 REST API. 응답은 모두 JSON(DRF)
+  /api/live/{경기}/stream  실시간 경기 SSE 스트림(django-sse 서비스가 처리)
+경기 주소는 "{시즌}-{경기번호}" 형식(예: 023-6)이라 정규식(MATCH_KEY)으로 받는다.
+"""
 from django.contrib import admin
 from django.urls import path, re_path
 
@@ -9,7 +16,7 @@ from league import views as league
 from matches import views as matches
 from ops.views import health
 
-MATCH_KEY = r"(?P<key>\d{3}-\d+)"
+MATCH_KEY = r"(?P<key>\d{3}-\d+)"  # 경기 키: 시즌 코드 3자리 - 경기 번호
 
 urlpatterns = [
     path("admin/", admin.site.urls),

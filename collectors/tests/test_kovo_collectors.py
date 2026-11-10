@@ -1,8 +1,15 @@
+"""시즌(SeasonCollector)·일정(ScheduleCollector) 수집기 테스트.
+
+확인하는 것: 리그·성별 조합을 빠짐없이 도는지, 페이지를 따라가는지, 실행 기록(ops.collection-log)의
+RUNNING → SUCCESS/FAILED 상태가 올바른지, Kafka가 죽어 있으면 KOVO에 요청하지 않는지.
+"""
 import pytest
 
 from collectors.kovo_collectors import ScheduleCollector, SeasonCollector, leagues_of
 from tests.fakes import RecordingPublisher, ok
 
+# 시즌 목록 응답. 022 시즌에는 정규리그(201)·플레이오프(202) 외에 실제 경기가 아닌 리그 코드
+# (200 시즌 통산, 801 올스타전, 901 시범경기)도 섞여 있다 → leagues_of가 걸러야 한다
 SEASONS = {"result": {"status": 200}, "payload": [
     {"seasonCode": "022", "leagues": [{"leagueCode": "201"}, {"leagueCode": "200"}, {"leagueCode": "202"},
                                       {"leagueCode": "801"}, {"leagueCode": "901"}]},
@@ -11,6 +18,7 @@ SEASONS = {"result": {"status": 200}, "payload": [
 
 
 class FakeClient:
+    """KovoClient 흉내. 일정은 페이지마다 경기 하나를 돌려주고, 전체 페이지 수는 pages로 정한다."""
     def __init__(self, pages=1):
         self.pages = pages
         self.schedule_calls = []
@@ -25,29 +33,33 @@ class FakeClient:
 
 
 def test_leagues_of_skips_all_star_codes():
+    """실제 경기 리그 코드만 남기고, 없는 시즌은 빈 목록이다."""
     assert leagues_of(SEASONS, "022") == ["201", "202"]
     assert leagues_of(SEASONS, "999") == []
 
 
 def test_schedule_covers_every_league_and_gender_with_season_key():
+    """리그 2개 × 남녀 2개 = 4번 요청하고, 응답을 손대지 않은 채 시즌 코드를 키로 보낸다."""
     pub = RecordingPublisher()
     n = ScheduleCollector(FakeClient(), pub).run(season_code="022")
-    assert n == 4  # 2 leagues x 2 genders
+    assert n == 4  # 리그 2개 × 성별 2개
     msgs = pub.on("kovo.schedule")
     assert {m[1] for m in msgs} == {"022"}
     env = msgs[0][2]
     assert env["source"] == "kovo" and env["endpoint"] == "/stat/game-schedule"
-    assert env["payload"]["payload"]["content"] == [{"gnum": 1}]  # raw response kept as-is
-    assert pub.flushed == 2  # data first, then the success log
+    assert env["payload"]["payload"]["content"] == [{"gnum": 1}]  # 원본 응답을 그대로 담는다
+    assert pub.flushed == 2  # 데이터를 먼저 확실히 보내고, 그다음 성공 기록
 
 
 def test_schedule_follows_pagination():
+    """totalPages만큼 페이지를 차례로 요청한다."""
     client = FakeClient(pages=3)
     ScheduleCollector(client, RecordingPublisher()).run(season_code="023", genders=("1",))
     assert [c[3] for c in client.schedule_calls] == [0, 1, 2]
 
 
 def test_unknown_season_fails_and_is_logged():
+    """없는 시즌이면 예외를 던지고 실행 기록은 RUNNING → FAILED로 남는다."""
     pub = RecordingPublisher()
     with pytest.raises(ValueError):
         ScheduleCollector(FakeClient(), pub).run(season_code="999")
@@ -56,6 +68,7 @@ def test_unknown_season_fails_and_is_logged():
 
 
 class FailingFlushPublisher(RecordingPublisher):
+    """첫 flush(데이터 전송 확인)만 실패하는 발행기: 브로커가 잠깐 죽은 상황."""
     def flush(self, timeout=30.0):
         self.flushed += 1
         if self.flushed == 1:
@@ -63,6 +76,7 @@ class FailingFlushPublisher(RecordingPublisher):
 
 
 def test_failed_delivery_is_logged_once_as_failed_not_success():
+    """데이터 전송이 실패하면 SUCCESS가 아니라 FAILED 한 번만 기록한다."""
     pub = FailingFlushPublisher()
     with pytest.raises(RuntimeError):
         SeasonCollector(FakeClient(), pub).run(gcode="001")
@@ -71,11 +85,13 @@ def test_failed_delivery_is_logged_once_as_failed_not_success():
 
 
 class UnreachablePublisher(RecordingPublisher):
+    """연결 확인(check)부터 실패하는 발행기: Kafka가 아예 꺼진 상황."""
     def check(self, timeout=10.0):
         raise RuntimeError("kafka down")
 
 
 def test_no_kovo_request_when_kafka_is_down():
+    """보낼 곳이 없으면 KOVO에 요청하지 않는다(받아 놓고 버리는 요청을 만들지 않기 위해)."""
     client = FakeClient()
     with pytest.raises(RuntimeError):
         ScheduleCollector(client, UnreachablePublisher()).run(season_code="023")
@@ -83,6 +99,7 @@ def test_no_kovo_request_when_kafka_is_down():
 
 
 def test_collection_log_records_count_on_success():
+    """성공하면 마지막 실행 기록이 SUCCESS이고 보낸 레코드 수가 담긴다."""
     pub = RecordingPublisher()
     SeasonCollector(FakeClient(), pub).run(gcode="001")
     done = pub.on("ops.collection-log")[-1][2]
@@ -90,6 +107,7 @@ def test_collection_log_records_count_on_success():
 
 
 def test_schedule_collector_keeps_games_of_its_run_and_run_id():
+    """수집한 경기 목록과 run_id를 객체에 남긴다(DAG가 다음 단계에서 쓰고, 메시지마다 같은 run_id가 붙는다)."""
     pub = RecordingPublisher()
     col = ScheduleCollector(FakeClient(), pub)
     col.run(season_code="023", genders=("1",))

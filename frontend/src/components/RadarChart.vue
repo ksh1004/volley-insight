@@ -1,10 +1,10 @@
 <script setup>
-// Team strengths and weaknesses as a radar (ANL-02, WEB-06). Each axis is the team's score among the league's teams
-// (100 = best, 0 = worst); the dashed ring is the middle (50). Chart guidance (ui-ux-pro-max "Multi-Variable
-// Comparison"): at most 8 axes, one dataset at 20% fill, the reference drawn with a different line style, every axis
-// labelled with its rank, and the same facts as text (strengths / weaknesses) plus the value table on the page.
-// Interaction: pointing at (or focusing) an axis label highlights that spoke and writes its rank and score.
-// Motion: the shape grows out from the centre when first seen and morphs to the new shape when the data changes.
+// 팀 강약점 레이더 차트(ANL-02, WEB-06). 축마다 리그 팀들 사이에서의 점수(100 = 1위, 0 = 꼴찌), 점선 원은 가운데(50).
+// 차트 지침(ui-ux-pro-max "다변수 비교"): 축은 최대 8개, 데이터는 하나를 20% 채우기로, 기준선은 다른 선 모양으로,
+// 축마다 순위를 적고, 같은 내용을 글(강점/약점)과 화면의 값 표로도 제공한다.
+// 상호작용: 축 이름을 가리키거나 포커스하면 그 축을 강조하고 순위·점수를 적어 준다.
+// 모션: 처음 보일 때 도형이 가운데에서 자라나고, 데이터가 바뀌면(시즌 변경) 새 모양으로 바뀌어 간다(모핑).
+// 좌표: SVG 320×320, 중심 C, 반지름 R. 축 i의 값 v는 각도 angle(i) 방향으로 R × v/100만큼 떨어진 점.
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { DURATION, ease, reducedMotion, useInView, useTween } from '@/motion/core'
 
@@ -13,15 +13,17 @@ const props = defineProps({
   team: { type: String, required: true },
 })
 
-const S = 320
-const C = S / 2
-const R = 112
+const S = 320 // SVG 크기
+const C = S / 2 // 중심
+const R = 112 // 100점의 반지름(바깥은 축 이름 자리)
 const usable = computed(() => props.axes.filter((a) => a.score != null))
+// 축 i의 각도(맨 위에서 시작해 시계 방향)
 const angle = (i) => (Math.PI * 2 * i) / props.axes.length - Math.PI / 2
+// 축 i 위의 값 v 점의 좌표, 그리고 점들을 이은 다각형 문자열
 const pt = (i, v) => [C + Math.cos(angle(i)) * R * (v / 100), C + Math.sin(angle(i)) * R * (v / 100)]
 const poly = (vals) => vals.map((v, i) => pt(i, v).join(',')).join(' ')
 
-// ---- drawn scores: grow from the centre once seen, then glide between data sets
+// ---- 그리는 점수: 처음 보이면 가운데에서 자라고(grow 0→1), 이후 데이터가 바뀌면 이전 모양에서 새 모양으로 보간
 const el = ref(null)
 const seen = useInView(el)
 const grow = useTween(() => (seen.value ? 1 : 0), { duration: DURATION.chart, easing: ease.out, from: 0 })
@@ -44,13 +46,15 @@ onBeforeUnmount(() => cancelAnimationFrame(raf))
 const value = (i) => (drawn.value[i] ?? 0) * grow.value
 const shape = computed(() => poly(props.axes.map((_, i) => value(i))))
 
-const rings = [25, 50, 75, 100]
+const rings = [25, 50, 75, 100] // 배경 동심원(50은 점선 = 리그 가운데)
+// 축 이름 위치와 정렬(오른쪽 축은 왼쪽 정렬, 왼쪽 축은 오른쪽 정렬, 위아래는 가운데)
 const labelPos = (i) => {
   const [x, y] = pt(i, 128)
   const cos = Math.cos(angle(i))
   return { x, y, anchor: Math.abs(cos) < 0.2 ? 'middle' : cos > 0 ? 'start' : 'end' }
 }
 
+// 강점(60점 이상 상위 3개)·약점(40점 이하 하위 3개)과 화면 낭독기용 요약 문장
 const sorted = computed(() => [...usable.value].sort((a, b) => b.score - a.score))
 const strengths = computed(() => sorted.value.filter((a) => a.score >= 60).slice(0, 3))
 const weaknesses = computed(() => sorted.value.filter((a) => a.score <= 40).slice(-3).reverse())
@@ -61,7 +65,7 @@ const summary = computed(() => {
   return `${props.team} 강약점. 강점: ${s}. 약점: ${w}.`
 })
 
-// ---- pointed axis
+// ---- 가리킨 축
 const active = ref(null)
 const activeAxis = computed(() => (active.value == null ? null : props.axes[active.value]))
 const indexOf = (a) => props.axes.findIndex((x) => x.key === a.key)

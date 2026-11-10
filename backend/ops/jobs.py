@@ -1,7 +1,7 @@
-"""ADM-01 job status and ADM-02 manual runs, read from and sent to Airflow's REST API.
+"""ADM-01 작업 현황과 ADM-02 수동 실행: Airflow REST API에서 읽고, Airflow REST API로 실행을 요청한다.
 
-Collector runs (COL-08) come from Elasticsearch `ops-collection-*` (Kafka ops.collection-log via Filebeat).
-Both services can be down (compose profiles batch/search); the admin pages then say so instead of failing.
+수집기 실행 기록(COL-08)은 Elasticsearch `ops-collection-*`에서 읽는다(Kafka ops.collection-log → Filebeat → ES).
+두 서비스 모두 꺼져 있을 수 있다(compose의 batch/search 프로필). 그러면 관리자 화면이 오류로 죽지 않고 그렇다고 알린다.
 """
 import json
 import os
@@ -11,18 +11,19 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 AIRFLOW = os.environ.get("AIRFLOW_API_URL", "http://airflow:8080").rstrip("/")
-# the admin opens Airflow in the browser on the same PC (Airflow is bound to 127.0.0.1, NFR-34)
+# 관리자가 같은 PC의 브라우저로 Airflow를 연다(Airflow는 127.0.0.1에만 열려 있음, NFR-34). 링크 주소용
 AIRFLOW_UI = os.environ.get("AIRFLOW_UI_URL", "http://localhost:8080").rstrip("/")
-COLLECTION_INDEX = "ops-collection-*"
-RECENT_RUNS = 12
-STUCK_AFTER = timedelta(hours=3)
+COLLECTION_INDEX = "ops-collection-*"  # 수집 실행 로그 색인
+RECENT_RUNS = 12  # DAG마다 보여 줄 최근 실행 수
+STUCK_AFTER = timedelta(hours=3)  # 시작만 하고 이만큼 결과가 없으면 '멈춘 실행'(프로세스가 죽은 것)으로 본다
 
 
 class ServiceError(Exception):
-    pass
+    """Airflow·MLflow 같은 외부 서비스 호출이 실패했을 때. 메시지는 관리자 화면에 그대로 보인다(한국어)."""
 
 
 def call(method, url, body=None, timeout=10):
+    """JSON REST API를 부르는 작은 HTTP 도우미(요청 라이브러리 없이 표준 라이브러리만). 실패하면 ServiceError."""
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
     try:
@@ -35,7 +36,7 @@ def call(method, url, body=None, timeout=10):
     return json.loads(text)
 
 
-# Our DAGs in the order the page lists them. `run_now`: may be started as is from the manual-run page.
+# 우리 DAG들(화면에 보이는 순서). label/what은 화면 문구, `run_now`: 수동 실행 화면에서 설정 없이 바로 실행해도 되는가
 DAGS = {
     "kovo_daily": {"label": "매일 수집·정제", "what": "일정·결과, 최근 7일 누락 경기 → 정제 → 마트 → 품질 검사", "run_now": True},
     "kovo_postgame": {"label": "경기 후 기록", "what": "막 끝난 경기의 선수 기록·문자중계 → 정제 → 기록 확정", "run_now": True},
@@ -46,19 +47,23 @@ DAGS = {
     "kovo_backfill": {"label": "과거 시즌 수집", "what": "시즌 전체 수집·정제 (시즌당 약 20분)", "run_now": False},
     "live_replay": {"label": "경기 재생", "what": "끝난 경기를 실시간 파이프라인으로 다시 보냄 (시연·점검)", "run_now": False},
 }
+# Airflow 실행 상태 → 화면 문구
 STATE_LABELS = {"success": "성공", "failed": "실패", "running": "실행 중", "queued": "대기", "skipped": "건너뜀"}
 
 
 def _time(text):
+    """Airflow의 ISO 시각 문자열 → datetime(없으면 None)."""
     return datetime.fromisoformat(text.replace("Z", "+00:00")) if text else None
 
 
 def run_url(dag_id, run_id=""):
+    """Airflow 화면에서 그 DAG(또는 실행)를 여는 링크."""
     url = f"{AIRFLOW_UI}/dags/{dag_id}"
     return url + (f"/runs/{urllib.parse.quote(run_id, safe='')}" if run_id else "")
 
 
 def _run(r):
+    """Airflow 실행 정보를 화면용으로: 상태 문구, 시작·끝, 걸린 분, 링크, 실행 설정."""
     start, end = _time(r.get("start_date")), _time(r.get("end_date"))
     return {"run_id": r["dag_run_id"], "state": r.get("state") or "", "state_label": STATE_LABELS.get(r.get("state"), r.get("state")),
             "run_type": r.get("run_type", ""), "start": start, "end": end,
@@ -68,7 +73,7 @@ def _run(r):
 
 
 def overview(now=None):
-    """One row per DAG: paused, schedule, next run, recent runs (newest first), failures in the last 7 days."""
+    """DAG마다 한 줄: 일시 중지 여부, 일정, 다음 실행, 최근 실행들(최신부터), 최근 7일 실패 수. '수집 현황' 화면의 표."""
     now = now or datetime.now(timezone.utc)
     dags = {d["dag_id"]: d for d in call("GET", f"{AIRFLOW}/api/v2/dags?limit=100")["dags"]}
     week = urllib.parse.quote((now - timedelta(days=7)).isoformat())
@@ -90,11 +95,12 @@ def overview(now=None):
 
 
 def dag_info(dag_id):
+    """DAG 하나의 정보(일시 중지 여부 등)."""
     return call("GET", f"{AIRFLOW}/api/v2/dags/{urllib.parse.quote(dag_id)}")
 
 
 def trigger(dag_id, conf, note):
-    """Start a DAG run now with this config; returns the run id. Refuses a paused DAG (the run would only queue)."""
+    """이 설정으로 DAG 실행을 지금 시작하고 실행 id를 돌려준다. 일시 중지된 DAG는 거부한다(대기열에만 쌓이므로)."""
     if dag_info(dag_id).get("is_paused"):
         raise ServiceError(f"{dag_id}이(가) Airflow에서 일시 중지되어 있어 실행되지 않습니다. Airflow 화면에서 켜 주세요.")
     run = call("POST", f"{AIRFLOW}/api/v2/dags/{urllib.parse.quote(dag_id)}/dagRuns",
@@ -102,10 +108,11 @@ def trigger(dag_id, conf, note):
     return run.get("dag_run_id", "")
 
 
-# ---------------------------------------------------------------- collector runs (Elasticsearch)
+# ---------------------------------------------------------------- 수집기 실행 기록 (Elasticsearch)
 def collection_runs(es=None, days=7, now=None):
-    """Collector runs of the last `days` days grouped by job: last finished run, counts, recent failures and runs
-    that started but never reported a result (the process died)."""
+    """최근 `days`일의 수집기 실행을 작업별로 묶는다: 마지막으로 끝난 실행, 성공·실패·멈춤 수, 모은 레코드 수,
+    최근 실패와 '시작만 하고 결과를 못 남긴 실행'(프로세스가 죽은 경우).
+    한 실행은 시작(RUNNING)과 끝(SUCCESS/FAILED) 두 문서가 있으므로 run_id로 합쳐 끝 문서를 우선한다."""
     from articles.search import client
 
     now = now or datetime.now(timezone.utc)

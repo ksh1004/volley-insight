@@ -1,5 +1,7 @@
 <script setup>
-// Season select (hide-season leaves it out) + men/women toggle, bound to the shared filters store.
+// 필터 막대: 시즌 선택 상자(hide-season이면 숨김) + 남자부/여자부 탭. 공용 필터 저장소(stores/filters.js)와 연결되어
+// 여기서 바꾸면 그 값을 쓰는 모든 화면이 함께 바뀐다. all-genders면 '전체' 탭도 보인다.
+// <slot />: 이 막대 오른쪽에 화면마다 다른 요소(체크박스 등)를 끼워 넣을 수 있다.
 import { GENDERS } from '@/constants/volley'
 import { useFiltersStore } from '@/stores/filters'
 

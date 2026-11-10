@@ -1,4 +1,9 @@
-"""Reads of the analysis marts for the team and player APIs."""
+"""분석 마트(Spark가 만든 요약 테이블)를 읽어 팀·선수·경기 API에 넣을 모양으로 만드는 함수들.
+
+  팀:    Elo 추이, 사이드아웃/브레이크율, 강약점 레이더
+  선수:  선수 유형·비슷한 선수, 포지션 내 백분위, 능력치 카드(시즌별·통산), 능력치 순위표
+  경기:  최신 예측, 상대 전적, 경기 전 두 팀의 최근 폼(프리뷰)
+"""
 from collections import defaultdict
 
 from django.db.models import Avg, F
@@ -8,14 +13,16 @@ from matches.serializers import match_key
 
 from .models import PlayerCareerRating, PlayerRating, PlayerSeasonSummary, TeamRating, TeamSeasonSummary
 
-REGULAR = "201"
+REGULAR = "201"  # 정규리그 리그 코드
 
 
 def _num(v):
+    """DB의 Decimal을 JSON에 넣을 float로(None은 그대로)."""
     return float(v) if v is not None else None
 
 
 def _rating_rows(team, rows):
+    """Elo 행들을 차트용 점 목록으로: 날짜, 점수, 변화량, 경기 전 승리 확률, 상대, 결과(이 팀 기준), 포스트시즌 여부."""
     out = []
     for r in rows:
         m = r.match
@@ -30,18 +37,19 @@ def _rating_rows(team, rows):
 
 
 def _ratings(team):
+    """팀의 Elo 행 쿼리셋(경기·시즌·두 팀을 함께 가져옴)."""
     return TeamRating.objects.filter(team=team).select_related("match__competition__season", "match__home_team",
                                                                 "match__away_team")
 
 
 def rating_history(team, season):
-    """Elo after each match of the season, oldest first (ANL-01)."""
+    """시즌의 경기마다 경기 후 Elo, 오래된 순(ANL-01). 팀 화면의 전력 지수 차트."""
     return _rating_rows(team, _ratings(team).filter(season=season).order_by("rated_on", "match__scheduled_at"))
 
 
 def rating_tail(team, season, n=10):
-    """The team's last `n` rated matches of the season before `season` (oldest first) and that season's years.
-    Shown faded before an early-season chart; empty when the team did not play the season before."""
+    """`season` 바로 전 시즌의 마지막 `n`경기 Elo(오래된 순)와 그 시즌 연도. 시즌 초반 차트 앞에 흐리게 붙인다.
+    전 시즌에 뛰지 않은 팀이면 빈 목록."""
     prev = Season.objects.filter(code__lt=season.code).order_by("-code").first()
     if prev is None:
         return {"season": None, "history": []}
@@ -50,7 +58,8 @@ def rating_tail(team, season, n=10):
 
 
 def current_ratings(gender, season):
-    """Latest Elo of every team that played in the season: {team_code: rating}."""
+    """그 시즌에 뛴 모든 팀의 최신 Elo: {팀 코드: 점수}. 팀 차트에서 리그 안 위치를 보여 줄 때 쓴다.
+    distinct("team_id")는 PostgreSQL의 DISTINCT ON: 팀마다 정렬상 첫 행(가장 최근)만 남긴다."""
     out = {}
     for r in (TeamRating.objects.filter(season=season, team__gender=gender).select_related("team")
               .order_by("team_id", "-rated_on", "-match__scheduled_at").distinct("team_id")):
@@ -59,7 +68,7 @@ def current_ratings(gender, season):
 
 
 def team_play_rates(team, season):
-    """Side-out / break rate of the team and the league average (ANL-11), regular season."""
+    """팀의 사이드아웃·브레이크율과 상황별 효율, 그리고 리그 평균(ANL-11, 정규리그)."""
     base = TeamSeasonSummary.objects.filter(competition__season=season, competition__league_code=REGULAR,
                                             team__gender=team.gender)
     mine = base.filter(team=team).first()
@@ -70,7 +79,7 @@ def team_play_rates(team, season):
     return {"team": team_vals, "league": {f: _num(league[f]) for f in fields}}
 
 
-# (key, label, lower is better) — the strength/weakness radar on the team page (ANL-02, WEB-06)
+# (키, 이름, 낮을수록 좋은가) — 팀 화면의 강약점 레이더 축들(ANL-02, WEB-06)
 PROFILE_AXES = [
     ("attack_pct", "공격 성공률", False), ("receive_efficiency", "리시브 효율", False),
     ("blocks_per_set", "블로킹", False), ("serve_aces_per_set", "서브 에이스", False),
@@ -80,9 +89,10 @@ PROFILE_AXES = [
 
 
 def team_profile(team, season, totals):
-    """Each indicator of the team as a score among the league's teams: 100 = best, 0 = worst, 50 = middle.
+    """팀의 지표마다 리그 팀들 사이의 점수: 100 = 1위, 0 = 꼴찌, 50 = 가운데. 레이더 차트의 축 값이 된다.
 
-    `totals` are the season box-score sums of every team (league.queries.team_totals). Ties share the score.
+    `totals`: 모든 팀의 시즌 박스스코어 합(league.queries.team_totals). 동점이면 같은 점수를 나눠 갖는다.
+    점수 = (나보다 못한 팀 수 + 동점 팀 수의 절반) / (팀 수 - 1) × 100.
     """
     from league.queries import rates
 
@@ -108,8 +118,8 @@ def team_profile(team, season, totals):
 
 
 def player_style(player, season):
-    """The player's type (K-means group) and most similar players for one season (ANL-06, WEB-07). None if the
-    player had too few sets that season."""
+    """한 시즌의 선수 유형(K-means 그룹)과 가장 비슷한 선수들(ANL-06, WEB-07). 그 시즌 출전이 너무 적었으면 None.
+    비슷한 선수는 코드만 저장돼 있어 이름·팀·시즌 연도를 한꺼번에 찾아 붙인다."""
     from league.models import Player, Team
 
     from .models import PlayerStyle
@@ -123,6 +133,7 @@ def player_style(player, season):
     years = dict(Season.objects.filter(code__in={r["season"] for r in refs}).values_list("code", "years"))
 
     def resolve(rows):
+        """저장된 코드들을 화면에 보여 줄 이름으로 바꾼다."""
         return [{"player": {"code": r["player"], "name": names.get(r["player"], r["player"])},
                  "season": {"code": r["season"], "years": years.get(r["season"], "")},
                  "team": {"code": r["team"], "name": teams.get(r["team"], r["team"])},
@@ -135,7 +146,7 @@ def player_style(player, season):
 
 
 def player_percentiles(player, season):
-    """Indicators and percentile within position for the regular season (ANL-05). None if not available."""
+    """정규리그 지표와 같은 포지션 안 백분위(ANL-05). 없으면 None. 시즌 중 이적한 선수는 세트가 많은 팀의 행."""
     s = (PlayerSeasonSummary.objects.filter(player=player, competition__season=season, competition__league_code=REGULAR)
          .order_by("-sets").first())
     if not s:
@@ -146,8 +157,9 @@ def player_percentiles(player, season):
             "values": {f: _num(getattr(s, f)) for f in fields}, "percentiles": s.percentiles or {}}
 
 
-# ---------------------------------------------------------------- match preview (WEB-08, ANL-03/04/10)
+# ---------------------------------------------------------------- 경기 프리뷰 (WEB-08, ANL-03/04/10)
 def latest_prediction(match):
+    """경기의 최신 예측과, 그 예측을 만든 모델의 시험 성적·실제 적중 기록(예측을 얼마나 믿을지 판단할 근거)."""
     from .models import MatchPrediction
 
     p = (MatchPrediction.objects.filter(match=match).select_related("model_version")
@@ -169,7 +181,7 @@ def latest_prediction(match):
 
 
 def head_to_head(match, limit=5):
-    """All finished meetings of the two teams before this match (ANL-04)."""
+    """이 경기 전에 두 팀이 치른 모든 경기의 상대 전적(ANL-04): 전체 수, 팀별 승수, 최근 `limit`경기."""
     from django.db.models import Q
 
     from matches.models import Match
@@ -184,7 +196,7 @@ def head_to_head(match, limit=5):
         winner = m.home_team_id if m.home_sets > m.away_sets else m.away_team_id
         wins["home" if winner == h else "away"] += 1
         if len(recent) < limit:
-            mine = m.home_team_id == h  # score from this match's home team point of view
+            mine = m.home_team_id == h  # 점수는 '이번 경기의 홈 팀' 입장에서 적는다
             recent.append({"match": match_key(m), "date": m.scheduled_at, "season": m.competition.season.years,
                            "score": f"{m.home_sets}:{m.away_sets}" if mine else f"{m.away_sets}:{m.home_sets}",
                            "winner": "home" if winner == h else "away"})
@@ -192,7 +204,7 @@ def head_to_head(match, limit=5):
 
 
 def team_form(team, before, season, limit=5):
-    """Last `limit` results before a date, the current Elo, and season-to-date indicators."""
+    """`before` 시각 이전 최근 `limit`경기 결과, 그때의 Elo, 시즌 누적 지표와 승패(프리뷰의 팀 비교)."""
     from django.db.models import Q
 
     from matches.models import Match
@@ -214,32 +226,34 @@ def team_form(team, before, season, limit=5):
             "record": f"{summary.wins}승 {summary.losses}패" if summary else None}
 
 
-# ---------------------------------------------------------------- position ratings (player cards)
+# ---------------------------------------------------------------- 포지션별 능력치(선수 카드)
 POSITION_NAMES = {"OH": "아웃사이드 히터", "OP": "아포짓", "MB": "미들 블로커", "S": "세터", "L": "리베로"}
-CARD_KEYS = ("key", "label", "weight", "score", "stats", "note")
+CARD_KEYS = ("key", "label", "weight", "score", "stats", "note")  # 화면에 보내는 능력치 필드(z 등 내부 값은 뺌)
 
 
 def _card(r):
+    """시즌 카드와 통산 카드가 함께 쓰는 공통 부분: 포지션, 종합, 세트, 자격, 능력치, 추가 정보."""
     return {"position": r.position, "position_name": POSITION_NAMES.get(r.position, r.position), "overall": r.overall,
             "sets": r.sets, "qualified": r.qualified,
             "abilities": [{k: a.get(k) for k in CARD_KEYS} for a in r.abilities], "extra": r.extra}
 
 
 def _season(s):
+    """응답에 넣을 시즌 참조(코드, 연도)."""
     return {"code": s.code, "years": s.years}
 
 
 def player_ratings(player):
-    """All of the player's cards (None without any): every rated season, oldest first, with its rank among the
-    qualified players of the same gender and position and the change from his latest earlier season at the same
-    position; and a career card per position (most sets first) with the all-time rank among careers of 3+
-    qualified seasons."""
+    """선수의 모든 카드(하나도 없으면 None).
+      seasons: 점수가 있는 모든 시즌(오래된 순). 같은 성별·포지션 자격 선수 중 순위, 같은 포지션의 직전 카드(비교용)
+      careers: 포지션별 통산 카드(세트가 많은 포지션부터). 자격 시즌 3번 이상인 통산들 중 역대 순위
+    순위는 '나보다 종합이 높은 사람 수 + 1'(동점은 같은 순위)."""
     rows = list(PlayerRating.objects.filter(player=player).select_related("season", "team").order_by("season__code"))
     careers = list(PlayerCareerRating.objects.filter(player=player)
                    .select_related("first_season", "last_season", "best_season").order_by("-sets", "position"))
     if not rows and not careers:
         return None
-    peers = defaultdict(list)  # (season id, position) -> qualified overalls, one query for all his seasons
+    peers = defaultdict(list)  # (시즌 id, 포지션) → 자격 선수들의 종합 점수. 모든 시즌을 쿼리 한 번으로
     if rows:
         for sid, pos, overall in (PlayerRating.objects
                                   .filter(gender=rows[0].gender, season_id__in={r.season_id for r in rows},
@@ -247,7 +261,7 @@ def player_ratings(player):
                                           overall__isnull=False)
                                   .values_list("season_id", "position", "overall")):
             peers[(sid, pos)].append(overall)
-    seasons, last_at = [], {}  # position -> his latest card at it so far
+    seasons, last_at = [], {}  # last_at: 포지션 → 지금까지 본 그 포지션의 가장 최근 카드
     for r in rows:
         group = peers[(r.season_id, r.position)]
         prev = last_at.get(r.position)
@@ -271,55 +285,44 @@ def player_ratings(player):
     return {"seasons": seasons, "careers": out}
 
 
-def rating_board(season, gender, position, include_all=False):
-    """Players of one gender and position ranked by overall (rank only among qualified players)."""
-    qs = (PlayerRating.objects.filter(season=season, gender=gender, position=position)
-          .select_related("player", "team").order_by(F("overall").desc(nulls_last=True), "player__name"))
-    if not include_all:
-        qs = qs.filter(qualified=True)
-    rows, rank, prev_overall, n = [], None, None, 0
-    for r in qs:
-        if r.qualified and r.overall is not None:
-            n += 1
-            if r.overall != prev_overall:
-                rank, prev_overall = n, r.overall
-        rows.append({"rank": rank if r.qualified and r.overall is not None else None,
-                     "player": {"code": r.player.code, "name": r.player.name},
-                     "team": {"code": r.team.code, "name": r.team.name}, "overall": r.overall, "sets": r.sets,
-                     "qualified": r.qualified, "provisional": r.provisional,
-                     "scores": {a["key"]: a.get("score") for a in r.abilities}})
-    first = qs.first()
-    abilities = [{"key": a["key"], "label": a["label"], "weight": a["weight"]} for a in first.abilities] if first else []
-    return {"position": position, "position_name": POSITION_NAMES.get(position, position), "abilities": abilities,
-            "rows": rows}
-
-
-def career_board(gender, position, include_all=False):
-    """All-time board: career cards of one gender and position ranked by overall (rank only among careers with 3+
-    qualified seasons), with the team of each player's latest season at the position."""
-    qs = (PlayerCareerRating.objects.filter(gender=gender, position=position)
-          .select_related("player", "first_season", "last_season", "best_season")
-          .order_by(F("overall").desc(nulls_last=True), "player__name"))
-    if not include_all:
-        qs = qs.filter(qualified=True)
-    cards = list(qs)
-    teams = {}
-    for r in (PlayerRating.objects.filter(player_id__in=[c.player_id for c in cards], position=position)
-              .select_related("team").order_by("player_id", "-season__code")):
-        teams.setdefault(r.player_id, {"code": r.team.code, "name": r.team.name})
+def _board(qs, position, include_all, extra):
+    """능력치 순위표의 행들(종합 높은 순). 순위 = 자격 있고 점수 있는 카드끼리의 경쟁 순위(1, 1, 3 식).
+    나머지는 include_all일 때 순위 없이 함께 나온다. extra(카드)가 순위표마다 다른 필드(팀, 기간 등)를 더한다."""
+    qs = qs.select_related("player").order_by(F("overall").desc(nulls_last=True), "player__name")
+    cards = list(qs if include_all else qs.filter(qualified=True))
     rows, rank, prev_overall, n = [], None, None, 0
     for c in cards:
         ranked = c.qualified and c.overall is not None
         if ranked:
             n += 1
-            if c.overall != prev_overall:
+            if c.overall != prev_overall:  # 동점이면 그 점수 첫 선수의 순위를 그대로 쓴다
                 rank, prev_overall = n, c.overall
         rows.append({"rank": rank if ranked else None, "player": {"code": c.player.code, "name": c.player.name},
-                     "team": teams.get(c.player_id), "overall": c.overall, "sets": c.sets, "seasons": c.seasons,
-                     "qualified_seasons": c.qualified_seasons, "qualified": c.qualified, "provisional": not c.qualified,
-                     "first": _season(c.first_season), "last": _season(c.last_season),
-                     "best": {"season": _season(c.best_season), "overall": c.best_overall} if c.best_season else None,
-                     "scores": {a["key"]: a.get("score") for a in c.abilities}})
-    abilities = [{"key": a["key"], "label": a["label"], "weight": a["weight"]} for a in cards[0].abilities] if cards else []
+                     "overall": c.overall, "sets": c.sets, "qualified": c.qualified,
+                     "scores": {a["key"]: a.get("score") for a in c.abilities}, **extra(c)})
+    # 표의 열 제목은 첫 카드에서: 한 포지션의 카드는 모두 같은 능력치를 같은 순서로 갖는다
+    abilities = [{k: a[k] for k in ("key", "label", "weight")} for a in cards[0].abilities] if cards else []
     return {"position": position, "position_name": POSITION_NAMES.get(position, position), "abilities": abilities,
             "rows": rows}
+
+
+def rating_board(season, gender, position, include_all=False):
+    """한 시즌·성별·포지션의 선수 순위(종합 점수 순, 순위는 자격 선수끼리만)."""
+    qs = PlayerRating.objects.filter(season=season, gender=gender, position=position).select_related("team")
+    return _board(qs, position, include_all,
+                  lambda r: {"team": {"code": r.team.code, "name": r.team.name}, "provisional": r.provisional})
+
+
+def career_board(gender, position, include_all=False):
+    """역대 순위표: 한 성별·포지션의 통산 카드를 종합 순으로(순위는 자격 시즌 3번 이상인 통산끼리만).
+    선수마다 그 포지션으로 뛴 가장 최근 시즌의 팀을 함께 보여 준다."""
+    qs = (PlayerCareerRating.objects.filter(gender=gender, position=position)
+          .select_related("first_season", "last_season", "best_season"))
+    teams = {}  # 선수 id → 그 포지션의 가장 최근 시즌 팀(최신순으로 돌며 처음 나온 것만 남김)
+    for r in (PlayerRating.objects.filter(player__in=qs.values("player"), position=position)
+              .select_related("team").order_by("player_id", "-season__code")):
+        teams.setdefault(r.player_id, {"code": r.team.code, "name": r.team.name})
+    return _board(qs, position, include_all, lambda c: {
+        "team": teams.get(c.player_id), "seasons": c.seasons, "qualified_seasons": c.qualified_seasons,
+        "provisional": not c.qualified, "first": _season(c.first_season), "last": _season(c.last_season),
+        "best": {"season": _season(c.best_season), "overall": c.best_overall} if c.best_season else None})

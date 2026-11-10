@@ -1,7 +1,8 @@
 <?xml version="1.0"?>
+<!-- 하둡 공통 설정: 기본 파일 시스템 주소(HDFS namenode) -->
 <configuration>
   <property><name>fs.defaultFS</name><value>hdfs://namenode:9000</value></property>
-  <!-- dev: let every user (airflow, flink, spark) read and write -->
+  <!-- 개발용: 모든 사용자(airflow, flink, spark)가 읽고 쓸 수 있게 한다(권한 검사 생략) -->
   <property><name>hadoop.http.staticuser.user</name><value>root</value></property>
   <property><name>hadoop.proxyuser.root.hosts</name><value>*</value></property>
   <property><name>hadoop.proxyuser.root.groups</name><value>*</value></property>

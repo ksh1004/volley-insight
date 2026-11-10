@@ -1,5 +1,7 @@
 <script setup>
-// WEB-06: season record, indicators vs league average, roster, recent and upcoming matches.
+// WEB-06 팀 화면: 시즌 성적, 강약점 레이더, 리그 평균 대비 지표, 전력 지수(Elo) 추이, 최근 폼이 바뀐 선수,
+// 선수단 표, 최근 경기와 다음 경기, 관련 기사. 데이터는 /api/teams/{code} 한 번으로 받는다.
+// ?season= 으로 볼 시즌을 정한다(없으면 그 팀의 가장 최근 시즌).
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { getTeam } from '@/api/client'
@@ -20,6 +22,7 @@ const route = useRoute()
 const season = ref(route.query.season || '')
 const state = ref({ loading: true, error: null })
 
+// 팀 데이터 불러오기(지금 고른 시즌으로). 응답의 시즌으로 선택값을 맞춘다
 async function load() {
   state.value = { loading: true, error: null }
   try {
@@ -32,9 +35,11 @@ async function load() {
   }
 }
 onMounted(load)
+// 시즌 선택이 바뀌면 다시 불러온다
 watch(season, (v) => { if (data.value && v !== data.value.season.code) load() })
 
 const two = (v) => num(v, 2)
+// 선수단 표의 열(SortableTable 형식)
 const ROSTER_COLS = [
   { key: 'name', label: '선수', left: true, sticky: true, get: (p) => p.player.name },
   { key: 'back_number', label: '번호' },
@@ -48,12 +53,13 @@ const ROSTER_COLS = [
   { key: 'receive_efficiency', label: '리시브 효율', fmt: (p) => pct(p.receive_efficiency) },
   { key: 'digs_per_set', label: '세트당 디그', fmt: (p) => two(p.digs_per_set) },
 ]
-// rank of this team's current Elo among the league's teams
+// 이 팀의 현재 Elo가 리그 팀들 중 몇 위인지
 const ratingRank = computed(() => {
   const all = Object.entries(data.value?.rating.league || {}).sort((a, b) => b[1] - a[1])
   const i = all.findIndex(([code]) => code === props.code)
   return i < 0 ? null : { rank: i + 1, teams: all.length }
 })
+// 리그 평균 대비 지표 행들(LeagueCompare 형식). 문자중계 기반 지표는 값이 있을 때만(2023-24부터)
 const rows = computed(() => {
   const t = data.value?.stats.team
   const l = data.value?.stats.league
@@ -66,12 +72,12 @@ const rows = computed(() => {
     { label: '리시브 효율', a: t.receive_efficiency, b: l.receive_efficiency, fmt: pct },
     { label: '세트당 디그', a: t.digs_per_set, b: l.digs_per_set, fmt: two },
     { label: '세트당 범실', a: t.errors_per_set, b: l.errors_per_set, fmt: two, lowerIsBetter: true },
-    // side-out / break come from play-by-play, available from 2023-24
+    // 사이드아웃/브레이크율은 문자중계로 계산하므로 2023-24부터 있다
     ...(t.sideout_rate != null ? [
       { label: '사이드아웃율', a: t.sideout_rate, b: l.sideout_rate, fmt: pct },
       { label: '브레이크율', a: t.break_rate, b: l.break_rate, fmt: pct },
     ] : []),
-    // play-by-play situations (ANL-11): first attack after the team's reception, rallies from 20:20 on
+    // 문자중계 상황별 효율(ANL-11): 리시브 직후 첫 공격 성공률, 20:20 이후 접전 랠리 승률
     ...(t.attack_after_good_receive != null ? [
       { label: '정확한 리시브 후 공격', a: t.attack_after_good_receive, b: l.attack_after_good_receive, fmt: pct },
       { label: '흔들린 리시브 후 공격', a: t.attack_after_poor_receive, b: l.attack_after_poor_receive, fmt: pct },

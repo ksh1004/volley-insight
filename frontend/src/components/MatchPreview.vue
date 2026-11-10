@@ -1,8 +1,8 @@
 <script setup>
-// WEB-08 match preview: win probability, set score probabilities, model accuracy, head-to-head, team comparison.
-// For finished matches it shows the pre-match prediction next to the result (ANL-10).
-// Interaction: pointing at (or focusing) a set score explains it in words and dims the others.
-// Motion: the set-score bars fill one after another when first seen and their percentages count up with them.
+// WEB-08 경기 프리뷰(경기 화면 안): 승리 확률, 세트 스코어별 확률, 모델 정확도, 상대 전적, 두 팀 지표 비교.
+// 끝난 경기는 경기 전에 냈던 예측을 실제 결과 옆에 보여 준다(ANL-10: 맞았는지 확인 가능).
+// 상호작용: 세트 스코어 막대를 가리키거나 포커스하면 그 확률을 문장으로 풀어 주고 나머지는 흐리게 한다.
+// 모션: 처음 보일 때 세트 스코어 막대가 차례로 차고 퍼센트가 함께 세어 올라간다.
 import { computed, ref } from 'vue'
 import CompareBars from '@/components/CompareBars.vue'
 import WinProbBar from '@/components/WinProbBar.vue'
@@ -16,7 +16,8 @@ const pv = computed(() => m.value.preview)
 const pred = computed(() => pv.value?.prediction)
 const done = computed(() => ['FINISHED', 'CONFIRMED'].includes(m.value.status))
 
-const ORDER = ['3:0', '3:1', '3:2', '2:3', '1:3', '0:3']
+const ORDER = ['3:0', '3:1', '3:2', '2:3', '1:3', '0:3'] // 세트 스코어(홈 기준) 표시 순서
+// 세트 스코어별 확률 막대: p 확률, top 가장 높은 칸, home 홈 승리 칸인가(색 구분)
 const dist = computed(() => {
   const probs = pred.value?.set_score_probs || {}
   const max = Math.max(...ORDER.map((k) => probs[k] || 0))
@@ -25,7 +26,8 @@ const dist = computed(() => {
 const distMax = computed(() => Math.max(...dist.value.map((x) => x.p)) || 1)
 const distEl = ref(null)
 const distSeen = useInView(distEl)
-const pointed = ref(null)
+const pointed = ref(null) // 가리킨 세트 스코어
+// 가리킨 세트 스코어를 문장으로: "A 3세트, B 1세트로 A 승리할 확률 24.5%"
 const pointedText = computed(() => {
   const d = dist.value.find((x) => x.key === pointed.value)
   if (!d) return ''
@@ -35,9 +37,11 @@ const pointedText = computed(() => {
 })
 const pct1 = (v) => `${v.toFixed(1)}%`
 const model = computed(() => pred.value?.model)
+// 확률(0~1) → "24.5%"
 const pctText = (v) => (v == null ? '-' : `${Math.round(v * 1000) / 10}%`)
 
 const h2h = computed(() => pv.value?.head_to_head)
+// 두 팀 시즌 지표 비교 행들(CompareBars 형식). 양쪽 값이 다 있는 지표만
 const rows = computed(() => {
   const h = pv.value?.home?.season
   const a = pv.value?.away?.season

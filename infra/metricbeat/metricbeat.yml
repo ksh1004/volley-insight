@@ -1,16 +1,16 @@
-# Pipeline metrics for the Kibana operations dashboard (ADM-04): Airflow delays, open data quality issues.
-#   -> data stream metrics-volley (Kafka consumer lag is written to the same stream by the kafka-lag service:
-#      Metricbeat's kafka module skips groups without live members, i.e. the Flink jobs' groups)
+# Metricbeat 설정: Kibana 운영 대시보드용 파이프라인 지표(ADM-04) — Airflow 지연, 해결 안 된 데이터 품질 문제.
+#   → 데이터 스트림 metrics-volley (Kafka 컨슈머 지연은 kafka-lag 서비스가 같은 스트림에 쓴다:
+#      Metricbeat의 kafka 모듈은 살아 있는 멤버가 없는 그룹, 즉 Flink 작업의 그룹을 건너뛰기 때문)
 metricbeat.modules:
-  # Airflow metadata DB, every 5 minutes: tasks and DAG runs that finished in the last 5 minutes
-  #   queue_delay_sec  task waited this long between queued and started (executor busy?)
-  #   start_delay_sec  DAG run started this long after it was due (scheduler behind?)
+  # Airflow 메타데이터 DB를 5분마다 조회: 최근 5분 안에 끝난 작업과 DAG 실행
+  #   queue_delay_sec  작업이 대기열에 들어가서 시작하기까지 기다린 시간(작업자가 바쁜가?)
+  #   start_delay_sec  DAG 실행이 예정 시각보다 늦게 시작한 시간(스케줄러가 밀렸나?)
   - module: sql
     metricsets: ["query"]
     period: 5m
     hosts: ["postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${AIRFLOW_DB}?sslmode=disable"]
     driver: postgres
-    raw_data.enabled: true  # (numbers are cast to float8: the driver returns NUMERIC as text)
+    raw_data.enabled: true  # (숫자는 float8로 바꿔 조회한다: 드라이버가 NUMERIC을 글자로 돌려주기 때문)
     sql_queries:
       - query: >
           SELECT 'task' AS kind, dag_id, task_id, state, try_number, duration AS duration_sec,
@@ -26,7 +26,7 @@ metricbeat.modules:
           WHERE end_date > now() - interval '5 minutes' AND end_date <= now()
         response_format: table
 
-  # Serving DB, every 5 minutes: data quality issues that are not resolved (PIPE-10, written by the curation job)
+  # 서비스 DB를 5분마다 조회: 해결되지 않은 데이터 품질 문제(PIPE-10, 정제 작업이 기록)
   - module: sql
     metricsets: ["query"]
     period: 5m

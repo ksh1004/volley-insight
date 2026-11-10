@@ -1,13 +1,13 @@
 <script setup>
-// Article rows (WEB-09, WEB-14): title opens the publisher's page in a new tab; we show only title, summary
-// and publisher (NFR-06). `highlight` renders search marks: the API escapes the text (encoder=html) and adds
-// only <mark>, so v-html is limited to that.
-// Motion: rows rise in one after another; the title underline draws from the left on hover.
+// 기사 목록(WEB-09, WEB-14): 제목을 누르면 언론사 페이지가 새 탭으로 열린다. 제목·요약·언론사만 보여 준다(NFR-06).
+// `highlight`: 검색 결과의 강조 표시를 그린다. API가 기사 글자를 이스케이프하고(encoder=html) <mark>만 넣어 주므로,
+// v-html(HTML 그대로 넣기)은 그 강조 문구에만 쓴다(안전한 범위).
+// 모션: 행이 차례로 떠오르며 나타나고, 제목에 마우스를 올리면 밑줄이 왼쪽부터 그려진다.
 import { fmtAgo, fmtFullDate } from '@/utils/format'
 
 defineProps({
   articles: { type: Array, required: true },
-  compact: Boolean, // no summary (side cards)
+  compact: Boolean, // 요약 없이(옆 카드용 작은 목록)
   highlight: Boolean,
 })
 </script>

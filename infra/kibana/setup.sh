@@ -1,6 +1,6 @@
 #!/bin/sh
-# Import the data views and the operations dashboard into Kibana (run by the kibana-setup service).
-# Re-running is safe: objects keep fixed ids and are overwritten.
+# Kibana에 데이터 뷰와 운영 대시보드를 넣는다(kibana-setup 서비스가 실행).
+# 다시 돌려도 안전하다: 객체 id가 고정이라 덮어쓴다. 실패하면(success가 없으면) 종료 코드로 알린다.
 set -eu
 KIBANA="${KIBANA_URL:-http://kibana:5601}"
 curl -sf -X POST "$KIBANA/api/saved_objects/_import?overwrite=true" \

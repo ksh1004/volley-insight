@@ -1,10 +1,11 @@
-// Directives of the motion toolkit, registered in main.js.
-//   v-reveal / v-reveal="i"   fade-and-rise once when the element first scrolls into view; i staggers siblings
-//   v-glider                  a highlight that slides to the selected tab of a group (pressed .tab buttons)
-//   v-glider:underline="sel"  an underline that slides to the active link (header menu), `sel` = CSS selector
+// 모션 도구의 Vue 지시자(directive)들. main.js에서 전역으로 등록한다(템플릿에서 v-이름으로 씀).
+//   v-reveal / v-reveal="i"   요소가 처음 화면에 들어올 때 한 번 아래에서 떠오르며 나타남. i로 형제끼리 순서대로 시차
+//   v-glider                  탭 묶음에서 선택된 탭(.tab[aria-pressed=true])으로 미끄러져 가는 강조 배경
+//   v-glider:underline="sel"  선택된 링크로 미끄러지는 밑줄(머리글 메뉴), `sel` = 선택 표시 CSS 선택자
 import { reducedMotion } from './core'
 
 // ---------------------------------------------------------------- v-reveal
+// 모든 v-reveal 요소가 감시자 하나를 함께 쓴다(요소마다 만들지 않아 가볍다)
 let revealer = null
 function revealObserver() {
   revealer ??= new IntersectionObserver((entries) => {
@@ -19,10 +20,10 @@ function revealObserver() {
 
 export const reveal = {
   mounted(el, binding) {
-    // without motion (or without IntersectionObserver) the element is simply there: never hidden
+    // 동작 줄이기거나 IntersectionObserver가 없으면 그냥 보이게 둔다: 절대 숨겨진 채로 남지 않게
     if (reducedMotion.value || typeof IntersectionObserver === 'undefined') return
     const i = Number.isFinite(binding.value) ? binding.value : 0
-    el.style.setProperty('--reveal-delay', `${Math.min(i, 8) * 45}ms`)
+    el.style.setProperty('--reveal-delay', `${Math.min(i, 8) * 45}ms`) // 순서마다 45ms 시차(최대 8번째까지)
     el.classList.add('reveal')
     revealObserver().observe(el)
   },
@@ -32,8 +33,10 @@ export const reveal = {
 }
 
 // ---------------------------------------------------------------- v-glider
+// 기본으로 찾는 '선택된 탭' 선택자
 const SELECTED = '.tab[aria-pressed="true"], .tab.active'
 
+// 강조 배경(또는 밑줄)을 선택된 탭의 위치·크기로 옮긴다. 이동 자체는 CSS transition이 부드럽게 처리
 function place(el) {
   const g = el._glider
   if (!g) return
@@ -52,13 +55,14 @@ function place(el) {
     s.transform = `translate(${x}px, ${y}px)`
   }
   if (!g.ready) {
-    // first placement without a slide, then switch the selected tab to "glider shows the colour"
+    // 처음 놓을 때는 미끄러지지 않게 하고, 그다음부터 '선택 색은 글라이더가 보여 줌' 모드로 바꾼다
     g.ready = true
     requestAnimationFrame(() => el.classList.add('glider-ready'))
   }
 }
 
 export const glider = {
+  // 묶음 맨 앞에 글라이더 요소를 넣고, 선택·크기 변화를 감시한다
   mounted(el, binding) {
     const node = document.createElement('span')
     node.className = `glider${binding.arg === 'underline' ? ' underline' : ''}`
@@ -67,7 +71,7 @@ export const glider = {
     el.prepend(node)
     el._glider = { node, selector: binding.value || SELECTED, underline: binding.arg === 'underline', ready: false }
     const update = () => requestAnimationFrame(() => place(el))
-    // selection changes (aria-pressed / router active class) and size changes (wrapping, fonts) move the glider
+    // 선택 변화(aria-pressed, 라우터의 active 클래스)와 크기 변화(줄바꿈, 글꼴 로딩)가 생기면 글라이더를 다시 놓는다
     el._gliderMo = new MutationObserver(update)
     el._gliderMo.observe(el, { subtree: true, attributes: true, attributeFilter: ['aria-pressed', 'class'], childList: true })
     if (typeof ResizeObserver !== 'undefined') {

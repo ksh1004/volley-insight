@@ -1,9 +1,9 @@
-"""Live match state, per-set indicators and the point-by-point flow (design.md ERD 2.2, PIPE-06).
+"""실시간 경기 상태, 세트별 지표, 득점 하나하나의 흐름(설계서 ERD 2.2, PIPE-06).
 
-Written only by the Flink job `live-metrics` (flink_jobs/live_metrics.py) with SQL upserts; the web app reads them.
-A row exists while a match is followed live or replayed (PIPE-11). `mode` tells the two apart, so a replay of a
-finished match is never shown as a real live game. Once the match is CONFIRMED, its pages use the official
-records (rally_event, team_match_stat) instead; these rows stay as the last live picture.
+Flink 작업 `live-metrics`(flink_jobs/live_metrics.py)만 SQL upsert로 쓰고, 웹 앱은 읽기만 한다.
+경기를 실시간으로 따라가거나 재생(PIPE-11)하는 동안 행이 생긴다. `mode`로 둘을 구별하므로 끝난 경기의 재생이
+진짜 실시간 경기로 보이는 일은 없다. 경기가 CONFIRMED가 되면 경기 화면은 공식 기록(rally_event, team_match_stat)을
+쓰고, 이 행들은 마지막 실시간 상태로 남는다.
 """
 from django.db import models
 
@@ -12,12 +12,16 @@ from matches.models import Match
 
 
 class LiveMode(models.TextChoices):
+    """실시간 경기인지, 끝난 경기의 재생인지."""
     LIVE = "LIVE", "실시간"
     REPLAY = "REPLAY", "재생"
 
 
 class LiveMatchState(PipelineModel):
+    """경기당 한 행: 지금 점수·세트·서브권·연속 득점·승리 확률·마지막 득점. 실시간 화면의 스코어보드가 된다."""
+
     class Status(models.TextChoices):
+        """진행 상태."""
         LIVE = "LIVE", "진행 중"
         FINISHED = "FINISHED", "종료"
 
@@ -48,6 +52,8 @@ class LiveMatchState(PipelineModel):
 
 
 class LiveSetMetric(PipelineModel):
+    """세트 × 팀 한 행: 득점, 공격 시도·성공·성공률, 서브 에이스·범실, 블로킹, 범실(실시간 화면의 세트별 비교표)."""
+
     match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="live_set_metrics")
     set_no = models.PositiveSmallIntegerField()
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="+")
@@ -66,9 +72,11 @@ class LiveSetMetric(PipelineModel):
 
 
 class LiveRally(PipelineModel):
-    """One row per point: the score after it, who served, who won it and how (점수 추이, 연속 득점 흐름)."""
+    """득점 하나당 한 행: 득점 뒤 점수, 서브한 팀, 딴 팀과 방법(공격·블로킹·서브·상대 범실), 관련 선수.
+    점수 흐름 차트와 득점 피드에 쓴다."""
 
     class Kind(models.TextChoices):
+        """득점 종류."""
         ATTACK = "ATTACK", "공격"
         BLOCK = "BLOCK", "블로킹"
         ACE = "ACE", "서브"

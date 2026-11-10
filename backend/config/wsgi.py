@@ -1,10 +1,6 @@
-"""
-WSGI config for config project.
+"""WSGI 진입점: 일반(동기) 웹 서버가 불러 쓰는 `application` 객체를 만든다(REST API를 처리하는 django-api 서비스).
 
-It exposes the WSGI callable as a module-level variable named ``application``.
-
-For more information on this file, see
-https://docs.djangoproject.com/en/5.2/howto/deployment/wsgi/
+참고: https://docs.djangoproject.com/en/5.2/howto/deployment/wsgi/
 """
 
 import os

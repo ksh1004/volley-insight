@@ -1,6 +1,6 @@
-# Ships logs to Elasticsearch for the Kibana operations dashboard (NFR-23, ADM-04).
-#   container stdout/stderr          -> logs-volley-YYYY.MM.DD
-#   Kafka ops.collection-log (COL-08) -> ops-collection-YYYY.MM   one document per collector run start/finish
+# Filebeat 설정: 로그를 Elasticsearch로 보내 Kibana 운영 대시보드에서 보게 한다(NFR-23, ADM-04).
+#   모든 컨테이너의 표준 출력/오류      → logs-volley-YYYY.MM.DD (날마다 새 색인)
+#   Kafka ops.collection-log (COL-08) → ops-collection-YYYY.MM  수집 실행의 시작/끝마다 문서 하나
 filebeat.inputs:
   - type: filestream
     id: docker-containers
@@ -11,14 +11,14 @@ filebeat.inputs:
     processors:
       - add_docker_metadata:
           host: "unix:///var/run/docker.sock"
-      # compose service name as a short field for dashboards
+      # compose 서비스 이름을 짧은 필드로 복사(대시보드에서 서비스별로 나눠 보기 위해)
       - copy_fields:
           fields:
             - from: container.labels.com_docker_compose_service
               to: compose_service
           fail_on_error: false
           ignore_missing: true
-      # a coarse level from the text, so errors can be counted across services with different log formats
+      # 로그 글자에서 대략의 수준(error/warning/info)을 뽑는다: 서비스마다 로그 형식이 달라도 오류 수를 함께 세기 위해
       - script:
           lang: javascript
           source: >
@@ -30,6 +30,7 @@ filebeat.inputs:
               event.Put("log.level", lvl);
             }
 
+  # 수집 실행 기록: Kafka 토픽을 직접 읽어 JSON을 풀고, 시작·종료 시각을 문서 시각으로 쓴다
   - type: kafka
     id: ops-collection-log
     hosts: ["kafka:9092"]
@@ -56,6 +57,7 @@ filebeat.inputs:
           fields: [message, kafka.headers]
           ignore_missing: true
 
+# 수집 기록은 ops-collection-*, 나머지 로그는 logs-volley-*로 보낸다
 output.elasticsearch:
   hosts: ["${ELASTICSEARCH_URL:http://elasticsearch:9200}"]
   indices:

@@ -1,3 +1,4 @@
+"""Django 앱 설정: 시즌·대회·팀·선수와 순위."""
 from django.apps import AppConfig
 
 

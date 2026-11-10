@@ -1,6 +1,6 @@
 <script setup>
-// WEB-05: team standings and player rankings by category.
-// Motion: switching the ranking category slides players who stay in the list to their new rank; new names fade in.
+// WEB-05 순위 화면: 팀 순위표(포스트시즌 진출 구간 표시)와 부문별 선수 순위.
+// 모션: 선수 순위 부문을 바꾸면 목록에 남는 선수는 새 순위 자리로 미끄러지고, 새로 들어온 이름은 서서히 나타난다.
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { getPlayerRanking, getStandings } from '@/api/client'
@@ -9,6 +9,7 @@ import FilterBar from '@/components/FilterBar.vue'
 import { useFiltersStore } from '@/stores/filters'
 import { num, postseasonZone, ratio } from '@/utils/format'
 
+// 선수 순위 부문(API의 category 값 → 탭 이름)
 const CATEGORIES = { points: '득점', attack: '공격 성공률', serve: '서브', block: '블로킹', receive: '리시브 효율', dig: '디그', set: '세트' }
 const filters = useFiltersStore()
 const route = useRoute()
@@ -18,6 +19,7 @@ const category = ref('points')
 const state = ref({ loading: true, error: null })
 const rankState = ref({ loading: true, error: null })
 
+// 팀 순위표 불러오기
 async function loadStandings() {
   state.value = { loading: true, error: null }
   try {
@@ -28,6 +30,7 @@ async function loadStandings() {
     state.value.loading = false
   }
 }
+// 선수 순위(지금 고른 부문) 불러오기
 async function loadRanking() {
   rankState.value = { loading: true, error: null }
   try {
@@ -38,16 +41,19 @@ async function loadRanking() {
     rankState.value.loading = false
   }
 }
+// 팀 코드 → 'po'(포스트시즌 진출) | 'semi'(준플레이오프) 표시
 const zone = computed(() => postseasonZone(standings.value?.rows))
+// 부문 단위에 맞춘 값 표시(% / 점 / 세트당 소수 셋째 자리)
 const fmtValue = (r) => (ranking.value.unit === '%' ? `${num(r.value, 2)}%` : ranking.value.unit === '점' ? num(r.value) : num(r.value, 3))
 
 onMounted(async () => {
   await filters.init()
   const g = route.query.gender
   if (['M', 'F'].includes(g)) filters.set({ gender: g })
-  else if (!['M', 'F'].includes(filters.gender)) filters.set({ gender: 'M' }) // standings need a division
+  else if (!['M', 'F'].includes(filters.gender)) filters.set({ gender: 'M' }) // 순위는 남녀부 중 하나를 골라야 한다
   await Promise.all([loadStandings(), loadRanking()])
 })
+// 시즌·남녀부가 바뀌면 둘 다, 부문이 바뀌면 선수 순위만 다시 불러온다
 watch(() => [filters.season, filters.gender], () => Promise.all([loadStandings(), loadRanking()]))
 watch(category, loadRanking)
 </script>

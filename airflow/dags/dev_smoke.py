@@ -1,4 +1,7 @@
-"""Development environment checks. Trigger manually from the Airflow UI."""
+"""개발 환경 점검용 DAG. Airflow 화면에서 손으로 실행한다(일정 없음).
+
+Airflow → Spark(YARN) → HDFS로 이어지는 연결이 살아 있는지 spark_jobs/smoke_pi.py 하나로 확인한다.
+"""
 from datetime import datetime
 
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
@@ -12,6 +15,7 @@ with DAG(
     catchup=False,
     tags=["dev"],
 ):
+    # 점검용이라 메모리를 작게 잡는다. driver.host는 YARN이 airflow 컨테이너의 드라이버로 다시 접속할 주소
     SparkSubmitOperator(
         task_id="spark_pi_on_yarn",
         conn_id="spark_yarn",

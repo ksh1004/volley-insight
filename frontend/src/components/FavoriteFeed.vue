@@ -1,6 +1,6 @@
 <script setup>
-// WEB-12: the viewer's favourite teams (record, next and last match) and players (last game, season so far),
-// shown first on the home page. Hidden for signed-out viewers.
+// WEB-12 홈 화면 맨 위의 '내 관심' 블록: 관심 팀(순위·성적, 다음 경기와 지난 경기)과 관심 선수(마지막 경기, 시즌 누적).
+// 로그인하지 않았거나 관심 등록이 하나도 없으면 보이지 않는다.
 import { computed, onMounted, ref } from 'vue'
 import { getFeed } from '@/api/client'
 import MatchCard from '@/components/MatchCard.vue'
@@ -11,6 +11,7 @@ import { fmtDate, num, pct } from '@/utils/format'
 const auth = useAuthStore()
 const feed = ref(null)
 const error = ref('')
+// 관심 팀이나 선수가 하나라도 있는가
 const hasAny = computed(() => auth.favorites.teams.length + auth.favorites.players.length > 0)
 
 onMounted(async () => {
@@ -23,14 +24,16 @@ onMounted(async () => {
   }
 })
 
-// the team's last match from its own side
+// 팀의 지난 경기를 그 팀 입장에서: 상대, 세트 스코어(내 것:상대 것), 이겼는가
 function lastResult(t) {
   const m = t.last
   const home = m.home.code === t.team.code
   const [mine, theirs] = home ? [m.home_sets, m.away_sets] : [m.away_sets, m.home_sets]
   return { opponent: home ? m.away.name : m.home.name, score: `${mine}:${theirs}`, won: mine > theirs }
 }
+// 세트당 득점
 const perSet = (s) => (s?.sets_played ? num(s.points / s.sets_played, 2) : '-')
+// 최근 폼 표시: 판정 → [글자, CSS 클래스]
 const FORM = { up: ['상승세', 'w'], down: ['하락세', 'down'], mixed: ['엇갈림', 'l'] }
 </script>
 

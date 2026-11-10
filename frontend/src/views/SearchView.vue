@@ -1,5 +1,6 @@
 <script setup>
-// WEB-10: one search over teams, players (Elasticsearch `entities`) and articles (`articles`).
+// WEB-10 검색 화면: 팀·선수(Elasticsearch `entities`)와 기사(`articles`)를 한 번에 검색한다.
+// 검색어는 주소(?q=)에 담는다(뒤로 가기·공유 가능). 기사는 10개씩 '더 보기'.
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { searchAll } from '@/api/client'
@@ -15,8 +16,10 @@ const data = ref(null)
 const articles = ref([])
 const page = ref(1)
 const state = ref({ loading: false, more: false, error: null })
+// 검색어가 없을 때 보여 주는 예시 검색어
 const EXAMPLES = ['대한항공', '김연경', '현대건설', '프로배구 개막']
 
+// reset이면 새 검색(1페이지), 아니면 기사 다음 페이지를 뒤에 붙인다
 async function load(reset = true) {
   if (!q.value) { data.value = null; return }
   if (reset) { page.value = 1; state.value = { loading: true, more: false, error: null } } else state.value.more = true
@@ -32,9 +35,12 @@ async function load(reset = true) {
   }
 }
 
+// 주소의 검색어가 바뀌면(처음 열 때 포함) 입력칸을 맞추고 다시 검색
 watch(q, (v) => { text.value = v; load() }, { immediate: true })
+// 검색 버튼: 주소에 검색어를 넣는다(그러면 위 watch가 검색)
 const submit = () => text.value.trim() && router.push({ query: { q: text.value.trim() } })
 const more = () => { page.value += 1; load(false) }
+// 팀·선수·기사 모두 결과 없음
 const nothing = computed(() => data.value && !data.value.teams.length && !data.value.players.length && !data.value.articles.total)
 const hasMore = computed(() => data.value && articles.value.length < data.value.articles.total)
 </script>

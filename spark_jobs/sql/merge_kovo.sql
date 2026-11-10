@@ -1,8 +1,10 @@
--- Merge the curated KOVO tables in schema `staging` (written by curate_kovo.py) into the serving tables.
--- Runs in one transaction. Staging rows carry KOVO codes; this script turns them into foreign keys.
--- Re-running with the same staging data gives the same result (upserts + removal of rows that disappeared).
+-- curate_kovo.py가 `staging` 스키마에 올린 정제 KOVO 테이블들을 서비스 테이블(Django가 읽는 테이블)로 병합한다.
+-- 한 트랜잭션으로 실행된다. staging 행에는 KOVO 코드(시즌·팀·선수 코드, 경기 번호)가 들어 있고, 이 스크립트가
+-- 그것을 서비스 테이블의 id(외래 키)로 바꾼다.
+-- 같은 staging 데이터로 다시 돌려도 결과가 같다(멱등): upsert + 원본에서 사라진 행 삭제.
+-- 읽는 법: INSERT ... ON CONFLICT DO UPDATE = 있으면 갱신, 없으면 추가(upsert). EXCLUDED = 새로 넣으려던 값.
 
--- ---------------------------------------------------------------- reference data
+-- ---------------------------------------------------------------- 기준 데이터(시즌, 대회, 팀, 선수)
 INSERT INTO season (code, name, years, start_date, end_date)
 SELECT code, name, years, start_date::date, end_date::date FROM staging.season
 ON CONFLICT (code) DO UPDATE SET
@@ -15,8 +17,8 @@ FROM staging.competition c JOIN season s ON s.code = c.season_code
 ON CONFLICT (season_id, gcode, league_code) DO UPDATE SET
   type = EXCLUDED.type, name = EXCLUDED.name, updated_at = now();
 
--- Teams and players: one staging row per season. Keep the most recent one, and never let an older
--- season (backfill) overwrite newer names.
+-- 팀과 선수: staging에는 시즌마다 한 행씩 있다. 가장 최근 것을 쓰고, 옛 시즌을 다시 처리할 때(백필)
+-- 옛 이름이 최신 이름을 덮어쓰지 않게 한다(last_seen_on 비교).
 INSERT INTO team (code, name, full_name, gender, home_city, home_arena, is_active, last_seen_on)
 SELECT DISTINCT ON (code) code, name, COALESCE(full_name, ''), gender, COALESCE(home_city, ''),
        COALESCE(home_arena, ''), true, last_seen_on::date
@@ -31,7 +33,7 @@ INSERT INTO player (code, name, gender, position, height_cm, nationality, status
 SELECT DISTINCT ON (code) code, name, gender, position, height_cm, '', '', last_seen_on::date
 FROM staging.player ORDER BY code, last_seen_on DESC, (name <> '') DESC
 ON CONFLICT (code) DO UPDATE SET
-  name = COALESCE(NULLIF(EXCLUDED.name, ''), player.name),           -- play-by-play-only rows have no name
+  name = COALESCE(NULLIF(EXCLUDED.name, ''), player.name),           -- 문자중계에만 나온 선수 행은 이름이 비어 있어 기존 이름을 유지
   gender = EXCLUDED.gender,
   position = COALESCE(NULLIF(EXCLUDED.position, ''), player.position),
   height_cm = COALESCE(EXCLUDED.height_cm, player.height_cm),
@@ -39,7 +41,7 @@ ON CONFLICT (code) DO UPDATE SET
   updated_at = now()
 WHERE player.last_seen_on IS NULL OR EXCLUDED.last_seen_on >= player.last_seen_on;
 
--- ---------------------------------------------------------------- matches
+-- ---------------------------------------------------------------- 경기(경기 시각은 서울 시각으로 해석해 저장)
 INSERT INTO match (competition_id, game_no, round, gender, home_team_id, away_team_id, scheduled_at, venue, city,
                    broadcasters, status, home_sets, away_sets, duration_min, spectators, referee_main, referee_sub)
 SELECT c.id, m.game_no, m.round, m.gender, ht.id, at.id,
@@ -55,8 +57,8 @@ ON CONFLICT (competition_id, game_no) DO UPDATE SET
   round = EXCLUDED.round, gender = EXCLUDED.gender, home_team_id = EXCLUDED.home_team_id,
   away_team_id = EXCLUDED.away_team_id, scheduled_at = EXCLUDED.scheduled_at, venue = EXCLUDED.venue,
   city = EXCLUDED.city, broadcasters = EXCLUDED.broadcasters,
-  -- the live pipeline (Flink live-metrics) sets LIVE, then FINISHED with the set count; a batch run before KOVO's
-  -- schedule has the result must not reset that to SCHEDULED 0:0
+  -- 실시간 경로(Flink live-metrics)가 LIVE로, 그다음 세트 수와 함께 FINISHED로 바꿔 둔다. KOVO 일정에 결과가
+  -- 올라오기 전에 도는 배치가 그것을 SCHEDULED 0:0으로 되돌리면 안 된다
   status = CASE WHEN match.status IN ('LIVE', 'FINISHED') AND EXCLUDED.status = 'SCHEDULED' THEN match.status
                 ELSE EXCLUDED.status END,
   home_sets = CASE WHEN match.status IN ('LIVE', 'FINISHED') AND EXCLUDED.status = 'SCHEDULED' THEN match.home_sets
@@ -67,7 +69,8 @@ ON CONFLICT (competition_id, game_no) DO UPDATE SET
   spectators = EXCLUDED.spectators, referee_main = EXCLUDED.referee_main, referee_sub = EXCLUDED.referee_sub,
   updated_at = now();
 
--- KOVO game number -> our match id for every staged game (a game number is unique within a season)
+-- 이번에 올라온 모든 경기의 (시즌, KOVO 경기 번호) → 서비스 match.id 대응표(경기 번호는 시즌 안에서 유일).
+-- 임시 테이블이라 트랜잭션이 끝나면 사라진다
 CREATE TEMP TABLE staged_match ON COMMIT DROP AS
 SELECT m.id AS match_id, s.code AS season_code, m.game_no
 FROM match m
@@ -82,12 +85,13 @@ ON CONFLICT (match_id, set_no) DO UPDATE SET
   home_points = EXCLUDED.home_points, away_points = EXCLUDED.away_points, duration_min = EXCLUDED.duration_min,
   updated_at = now();
 
+-- 다시 수집해 보니 없어진 세트 행 삭제(이번에 올라온 경기만)
 DELETE FROM set_score ss USING staged_match sm
 WHERE ss.match_id = sm.match_id
   AND NOT EXISTS (SELECT 1 FROM staging.set_score st
                   WHERE st.season_code = sm.season_code AND st.game_no = sm.game_no AND st.set_no = ss.set_no);
 
--- ---------------------------------------------------------------- box scores
+-- ---------------------------------------------------------------- 박스스코어(팀 기록, 선수 기록, 공격 종류별 기록)
 INSERT INTO team_match_stat (match_id, team_id, points, opponent_errors,
   attack_attempts, attack_success, attack_blocked, attack_errors, serve_attempts, serve_aces, serve_errors,
   block_attempts, block_success, block_effective, block_assist, receive_attempts, receive_excellent, receive_errors,
@@ -146,8 +150,8 @@ ON CONFLICT (player_match_stat_id, attack_type) DO UPDATE SET
   attempts = EXCLUDED.attempts, success = EXCLUDED.success, blocked = EXCLUDED.blocked, errors = EXCLUDED.errors,
   updated_at = now();
 
--- Rows that disappeared from a corrected box score, only for games whose box score was staged.
--- Django's on_delete=CASCADE is not a database rule, so attack rows go before their player rows.
+-- 고쳐진 박스스코어에서 사라진 행 삭제(이번에 박스스코어가 올라온 경기만).
+-- Django의 on_delete=CASCADE는 DB 규칙이 아니라 Django가 처리하는 것이라, 여기서는 공격 행을 선수 행보다 먼저 지운다.
 DELETE FROM player_attack_stat pas USING player_match_stat pms, staged_match sm, player p
 WHERE pas.player_match_stat_id = pms.id AND pms.match_id = sm.match_id AND p.id = pms.player_id
   AND EXISTS (SELECT 1 FROM staging.player_match_stat x WHERE x.season_code = sm.season_code AND x.game_no = sm.game_no)
@@ -161,7 +165,7 @@ WHERE pms.match_id = sm.match_id AND p.id = pms.player_id
   AND NOT EXISTS (SELECT 1 FROM staging.player_match_stat x
                   WHERE x.season_code = sm.season_code AND x.game_no = sm.game_no AND x.player_code = p.code);
 
--- ---------------------------------------------------------------- play-by-play: replace per game
+-- ---------------------------------------------------------------- 문자중계: 경기 단위로 통째로 교체
 DELETE FROM rally_event re USING staged_match sm
 WHERE re.match_id = sm.match_id
   AND EXISTS (SELECT 1 FROM staging.rally_event x WHERE x.season_code = sm.season_code AND x.game_no = sm.game_no);
@@ -175,27 +179,29 @@ JOIN staged_match sm USING (season_code, game_no)
 LEFT JOIN team t ON t.code = x.team_code
 LEFT JOIN player p ON p.code = x.player_code;
 
--- ---------------------------------------------------------------- derived flags
+-- ---------------------------------------------------------------- 파생 값
+-- 활동 중인 팀 = 데이터의 가장 최근 시즌에 경기한 팀
 UPDATE team SET is_active = team.id IN (
   SELECT unnest(ARRAY[m.home_team_id, m.away_team_id])
   FROM match m JOIN competition c ON c.id = m.competition_id JOIN season s ON s.id = c.season_id
   WHERE s.code = (SELECT max(s2.code) FROM season s2 JOIN competition c2 ON c2.season_id = s2.id
                   JOIN match m2 ON m2.competition_id = c2.id));
 
--- a player's position = the one in their latest box score (play-by-play-only rows have none, and old seasons'
--- codes are already mapped by curate_kovo.py), so a retired player is not left with a code from an old row
+-- 선수 포지션 = 가장 최근 박스스코어의 포지션(문자중계 전용 행에는 없고, 옛 시즌 코드는 curate_kovo.py가 이미
+-- 바꿔 둠). 은퇴한 선수가 오래된 행의 코드로 남지 않게 한다
 UPDATE player p SET position = latest.position, updated_at = now()
 FROM (SELECT DISTINCT ON (pms.player_id) pms.player_id, pms.position
       FROM player_match_stat pms JOIN match m ON m.id = pms.match_id
       WHERE pms.position <> '' AND pms.player_id IN (SELECT p2.id FROM player p2 JOIN staging.player sp ON sp.code = p2.code)
       ORDER BY pms.player_id, m.scheduled_at DESC) latest
 WHERE p.id = latest.player_id AND p.position IS DISTINCT FROM latest.position
-  AND NOT EXISTS (SELECT 1 FROM data_correction dc   -- an admin's position correction (ADM-03) wins
+  AND NOT EXISTS (SELECT 1 FROM data_correction dc   -- 관리자의 포지션 보정(ADM-03)이 있으면 그것이 우선
                   WHERE dc.is_active AND dc.target = 'player' AND dc.key = p.code AND dc.field = 'position');
 
--- ---------------------------------------------------------------- quality issues (PIPE-10)
--- Upsert what this run found for its seasons. Issues of those seasons that it no longer finds become RESOLVED.
--- An admin's ACKNOWLEDGED status (e.g. a gap in KOVO's own data) is kept while the issue is still there.
+-- ---------------------------------------------------------------- 품질 문제(PIPE-10)
+-- 이번 실행이 처리한 시즌에서 찾은 문제를 upsert 한다. 그 시즌의 문제 중 이번에 더 이상 안 보이는 것은 RESOLVED(해결).
+-- 관리자가 ACKNOWLEDGED(확인함)로 바꾼 상태(예: KOVO 자체 데이터의 빈틈)는 문제가 남아 있는 동안 유지한다.
+-- 해결됐던 문제가 다시 나타나면 OPEN으로 되돌린다.
 INSERT INTO quality_issue (season_code, game_no, match_id, set_no, rule, subject, detail, severity, status, note,
                            first_seen_at, last_seen_at)
 SELECT q.season_code, q.game_no, sm.match_id, q.set_no, q.rule, q.subject, q.detail, q.severity, 'OPEN', '',
@@ -212,7 +218,7 @@ WHERE qi.status <> 'RESOLVED' AND qi.season_code IN (SELECT code FROM staging.se
                   WHERE q.season_code = qi.season_code AND q.game_no = qi.game_no AND q.set_no = qi.set_no
                     AND q.rule = qi.rule AND q.subject = qi.subject);
 
--- ---------------------------------------------------------------- summary (printed by the Spark driver)
+-- ---------------------------------------------------------------- 요약(Spark 드라이버가 로그에 찍음): 시즌·상태별 경기 수 등
 SELECT sm.season_code, m.status, count(*) AS matches,
        sum((SELECT count(*) FROM rally_event re WHERE re.match_id = m.id)) AS rally_events,
        sum((SELECT count(*) FROM player_match_stat p WHERE p.match_id = m.id)) AS player_rows

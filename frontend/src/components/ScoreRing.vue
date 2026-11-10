@@ -1,6 +1,7 @@
 <script setup>
-// A 1-99 score as a ring that fills when first seen (the number in the middle counts up with it).
-// The ring repeats the number; screen readers get the label with the number once.
+// 1~99 점수를 원형 게이지로: 처음 화면에 보일 때 원이 차오르고 가운데 숫자도 함께 세어 올라간다.
+// 원은 숫자를 반복해 보여 줄 뿐이고, 화면 낭독기에는 "종합 72점 (99점 만점)"처럼 한 번만 읽힌다.
+// SVG 원의 pathLength를 100으로 두고 stroke-dasharray "점수 100"으로 채운 길이를 정한다.
 import { computed, ref } from 'vue'
 import { DURATION, ease, useInView, useTween } from '@/motion/core'
 
@@ -14,7 +15,7 @@ const el = ref(null)
 const seen = useInView(el)
 const shown = useTween(() => (seen.value && props.value != null ? props.value : 0), {
   duration: DURATION.chart, easing: ease.out, from: 0 })
-const R = 42
+const R = 42 // 원의 반지름(SVG 좌표 100 기준)
 const dash = computed(() => `${Math.max(0, Math.min(99, shown.value))} 100`)
 </script>
 

@@ -1,6 +1,6 @@
 <script setup>
-// Latest articles tagged with a team or a player (team/player pages). Player cards hide when there are none,
-// since most players are rarely named in headlines.
+// 팀이나 선수 태그가 붙은 최신 기사 5개(팀·선수 화면 아래쪽). 선수 화면은 기사가 없으면 카드를 아예 숨긴다
+// (hide-empty: 대부분의 선수는 기사 제목에 잘 나오지 않으므로 빈 카드가 많아지는 것을 막음).
 import { onMounted, ref } from 'vue'
 import { getArticles } from '@/api/client'
 import ArticleList from '@/components/ArticleList.vue'

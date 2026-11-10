@@ -1,9 +1,12 @@
 #!/bin/sh
-# Submit a PySpark job to YARN from the airflow container (client mode: the driver runs here).
+# PySpark 작업을 airflow 컨테이너에서 YARN으로 제출한다(client 모드: 드라이버는 이 컨테이너에서, 실제 계산을
+# 하는 executor는 YARN NodeManager 컨테이너에서 돈다).
 #
 #   docker compose exec airflow sh /opt/airflow/spark_jobs/submit.sh curate_kovo.py --seasons 022,023
+#   (인자 1: spark_jobs 안의 작업 파일, 나머지: 그 작업에 넘길 인자)
 #
-# Same settings as the Airflow DAGs (airflow/dags). Executors run on the YARN NodeManager.
+# Airflow DAG(airflow/dags, kovo_tasks/pipeline.py의 SPARK_CONF)와 같은 설정이라, 손으로 돌려도 결과가 같다.
+# 메모리 값은 이 PC(Docker 메모리 한도) 기준이다: 드라이버 1GB, executor 1개 × 2코어 × 1.5GB.
 set -eu
 job="$1"; shift
 exec spark-submit \

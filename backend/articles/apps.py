@@ -1,3 +1,4 @@
+"""Django 앱 설정: 뉴스 기사와 검색."""
 from django.apps import AppConfig
 
 

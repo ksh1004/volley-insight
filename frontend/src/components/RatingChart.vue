@@ -1,10 +1,11 @@
 <script setup>
-// Team Elo over one season (ANL-01). Chart rules from design-system/volley-insight/MASTER.md:
-// hover / arrow keys reveal each match, a sentence summary carries the same information, postseason
-// matches are marked by shape (hollow dot) as well as colour.
-// Interaction (ui-ux-pro-max "Trend Over Time": hover + zoom, buttons for zoom and reset): drag across the chart to
-// zoom into those matches; +/- buttons (or keys) zoom around the pointed match, "전체" restores the season.
-// Motion: the line draws in when first seen; zooming glides (both axes) instead of jumping.
+// 한 시즌의 팀 전력 지수(Elo) 추이(ANL-01). 차트 규칙(design-system/volley-insight/MASTER.md):
+// 마우스·화살표 키로 경기마다 값을 읽을 수 있고, 같은 내용을 문장 요약으로도 주며, 포스트시즌 경기는 색과 함께
+// 모양(속이 빈 점)으로도 구별한다.
+// 상호작용(ui-ux-pro-max "시간에 따른 추세": 확대·되돌리기 버튼): 차트를 끌어 범위를 고르면 그 경기들로 확대,
+// +/- 버튼(또는 키)으로 가리킨 경기 중심 확대·축소, '전체'로 시즌 전체 복귀.
+// 시즌 초반(10경기 미만)에는 지난 시즌 마지막 경기들을 흐리게 앞에 붙이고, 시즌 사이 점수 조정(1500 쪽으로 3분의 1)을 점선으로 잇는다.
+// 모션: 처음 보일 때 선이 그려지고, 확대할 때 가로·세로 축이 튀지 않고 미끄러지듯 바뀐다.
 import { computed, ref, useId } from 'vue'
 import { DURATION, ease, useInView, useTween } from '@/motion/core'
 import { fmtDate } from '@/utils/format'
@@ -12,9 +13,9 @@ import { fmtDate } from '@/utils/format'
 const props = defineProps({
   history: { type: Array, required: true }, // [{ date, rating, change, opponent, result, score, postseason }]
   teamName: { type: String, required: true },
-  rank: { type: Number, default: null }, // rank of the current rating in the league
+  rank: { type: Number, default: null }, // 지금 점수의 리그 내 순위
   teams: { type: Number, default: null },
-  // early in a season: { season: { years }, history: [...] } = the last matches of the season before, drawn faded
+  // 시즌 초반: { season: { years }, history: [...] } = 지난 시즌 마지막 경기들(흐리게 그림)
   previous: { type: Object, default: null },
   seasonYears: { type: String, default: '' },
 })
@@ -22,25 +23,26 @@ const props = defineProps({
 const uid = useId()
 const W = 600
 const H = 180
-const PAD = { t: 18, b: 12 }
-const MIN_SPAN = 4 // at least 5 matches stay in view
+const PAD = { t: 18, b: 12 } // 위·아래 여백
+const MIN_SPAN = 4 // 확대해도 최소 5경기는 보이게
 const cur = computed(() => props.history)
 const prev = computed(() => (cur.value.length && props.previous?.history?.length ? props.previous.history : []))
-const offset = computed(() => prev.value.length) // index of this season's first match
+const offset = computed(() => prev.value.length) // 이번 시즌 첫 경기의 인덱스(앞에 지난 시즌 점들이 있으므로)
 const pts = computed(() => [...prev.value.map((p) => ({ ...p, prev: true })), ...cur.value])
 const n = computed(() => pts.value.length)
-// this season's rating before its first match (last season's, pulled a third of the way back to 1500)
+// 이번 시즌 첫 경기 전 점수(지난 시즌 점수를 1500 쪽으로 3분의 1 되돌린 값) = 첫 경기 점수 - 첫 경기 변화량
 const startRating = computed(() => (cur.value.length ? cur.value[0].rating - cur.value[0].change : null))
 
-// ---- visible range [from, to] in match indices, animated
-const range = ref(null) // null = whole season
-// with last season shown, this season's few points keep some room on the right (label, last dot not on the edge)
+// ---- 보이는 범위 [from, to](경기 인덱스). 확대할 때 부드럽게 바뀐다
+const range = ref(null) // null = 시즌 전체
+// 지난 시즌을 함께 그릴 때는 오른쪽에 여유를 둔다(마지막 점과 이름표가 가장자리에 붙지 않게)
 const padEnd = computed(() => (offset.value ? 1.5 : 0))
 const target = computed(() => range.value ?? [0, Math.max(1, n.value - 1) + padEnd.value])
 const from = useTween(() => target.value[0], { duration: DURATION.slow, easing: ease.inOut })
 const to = useTween(() => target.value[1], { duration: DURATION.slow, easing: ease.inOut })
 const zoomed = computed(() => range.value != null)
 
+// 지금 범위 안의 경기인가. 세로 눈금은 보이는 점들(+1500 기준선)에 맞춰 위아래 15점 여유
 const inRange = (i) => i >= Math.floor(target.value[0]) && i <= Math.ceil(target.value[1])
 const yDomain = computed(() => {
   const vis = pts.value.filter((_, i) => inRange(i)).map((p) => p.rating)
@@ -54,35 +56,38 @@ const x = (i) => (n.value <= 1 ? W / 2 : ((i - from.value) / Math.max(0.0001, to
 const y = (v) => PAD.t + (1 - (v - lo.value) / (hi.value - lo.value)) * (H - PAD.t - PAD.b)
 const yPct = (v) => `${(y(v) / H) * 100}%`
 const xPct = (i) => `${(x(i) / W) * 100}%`
-// this season: from the season-start rating at the divider (when last season is shown) through every match
+// 이번 시즌 선: (지난 시즌을 그릴 때는) 시즌 구분선의 시작 점수에서 출발해 경기마다 이어 간다
 const line = computed(() => {
   const o = offset.value
   const start = o ? `M ${x(o - 0.5)} ${y(startRating.value)} L` : 'M'
   return start + cur.value.map((p, i) => ` ${x(o + i)} ${y(p.rating)}`).join(' L')
 })
 const prevLine = computed(() => prev.value.map((p, i) => `${i ? 'L' : 'M'} ${x(i)} ${y(p.rating)}`).join(' '))
-// last season's final rating -> this season's start: the off-season adjustment toward 1500
+// 지난 시즌 마지막 점수 → 이번 시즌 시작 점수: 비시즌 동안 1500 쪽으로 조정된 만큼을 잇는 선
 const carry = computed(() => (offset.value ? { x1: x(offset.value - 1), y1: y(prev.value[offset.value - 1].rating),
                                                   x2: x(offset.value - 0.5), y2: y(startRating.value) } : null))
 
+// 요약: 시즌 시작·현재 점수, 변화량, 최고점 경기
 const summary = computed(() => {
   if (!cur.value.length) return null
   const c = cur.value
-  const first = startRating.value // rating before the first match
+  const first = startRating.value // 첫 경기 전 점수
   const last = c[c.length - 1].rating
   const peak = c.reduce((a, b) => (b.rating > a.rating ? b : a))
   return { first, last, diff: last - first, peak }
 })
 
-// ---- pointer: hover reads a match, drag selects a range
+// ---- 포인터: 올리면 그 경기 값을 읽고, 끌면 범위를 고른다
 const active = ref(null)
 const shown = computed(() => (active.value == null ? null : pts.value[active.value]))
-const drag = ref(null) // { start, end } in match indices
+const drag = ref(null) // 끄는 중인 범위 { start, end }(경기 인덱스)
+// 마우스 위치 → 가장 가까운 경기 인덱스
 const indexAt = (e, el) => {
   const r = el.getBoundingClientRect()
   const f = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width))
   return Math.min(n.value - 1, Math.max(0, Math.round(from.value + f * (to.value - from.value))))
 }
+// 누르기 시작: 경기가 충분히 많을 때만 범위 선택 시작(포인터를 붙잡아 차트 밖으로 나가도 계속 받음)
 function onDown(e) {
   if (e.button !== 0 || n.value < MIN_SPAN + 2) return
   e.currentTarget.setPointerCapture?.(e.pointerId)
@@ -97,9 +102,10 @@ function onMove(e) {
 function onUp() {
   const d = drag.value
   drag.value = null
-  if (!d || Math.abs(d.end - d.start) < 2) return // a click, not a drag
+  if (!d || Math.abs(d.end - d.start) < 2) return // 끈 게 아니라 클릭이었다
   zoomTo(Math.min(d.start, d.end), Math.max(d.start, d.end))
 }
+// [a, b] 범위로 확대(최소 범위 보장, 끝을 넘지 않게. 전체와 같으면 null)
 function zoomTo(a, b) {
   if (b - a < MIN_SPAN) {
     const c = (a + b) / 2
@@ -110,6 +116,7 @@ function zoomTo(a, b) {
   b = Math.min(n.value - 1, b)
   range.value = a <= 0 && b >= n.value - 1 ? null : [a, b]
 }
+// 가리킨 경기(없으면 가운데)를 중심으로 factor배(0.5 = 확대, 2 = 축소)
 function zoom(factor) {
   const [a, b] = target.value
   const centre = active.value ?? (a + b) / 2
@@ -117,6 +124,7 @@ function zoom(factor) {
   zoomTo(Math.round(centre - half), Math.round(centre + half))
 }
 const reset = () => { range.value = null }
+// 키보드: ←→ 경기 이동, Home/End, + 확대, - 축소, 0 전체
 function onKey(e) {
   const moves = { ArrowRight: 1, ArrowLeft: -1, Home: -n.value, End: n.value }
   if (e.key === '+' || e.key === '=') { e.preventDefault(); zoom(0.5); return }
@@ -128,18 +136,20 @@ function onKey(e) {
   const next = (active.value ?? (moves[e.key] > 0 ? a - 1 : b + 1)) + moves[e.key]
   active.value = Math.min(b, Math.max(a, next))
 }
+// 끄는 동안 보이는 선택 영역 사각형
 const brush = computed(() => {
   if (!drag.value) return null
   const [a, b] = [Math.min(drag.value.start, drag.value.end), Math.max(drag.value.start, drag.value.end)]
   return { left: xPct(a), width: `${((x(b) - x(a)) / W) * 100}%` }
 })
+// 지금 범위 설명("시즌 전체" 또는 "날짜 ~ 날짜 (N경기)")
 const rangeText = computed(() => {
   if (!zoomed.value) return '시즌 전체'
   const [a, b] = target.value
   return `${fmtDate(pts.value[a].date)} ~ ${fmtDate(pts.value[b].date)} (${b - a + 1}경기)`
 })
 
-// ---- draw-in once visible
+// ---- 처음 보일 때 선 그리기
 const plot = ref(null)
 const seen = useInView(plot)
 const drawn = useTween(() => (seen.value ? 1 : 0), { duration: DURATION.chart, easing: ease.inOut, from: 0 })

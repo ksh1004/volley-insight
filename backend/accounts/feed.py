@@ -1,4 +1,4 @@
-"""The "my teams and players" block at the top of the home page (WEB-12)."""
+"""홈 화면 맨 위의 '내 관심 팀·선수' 블록 데이터(WEB-12, /api/me/feed)."""
 from datetime import timedelta
 
 from django.db.models import Q
@@ -13,6 +13,7 @@ from matches.views import base_matches
 
 
 def _team_card(team, season, standings):
+    """관심 팀 카드: 순위·성적·최근 폼, 마지막 경기, 다음 경기. standings는 성별별 순위표 캐시(팀마다 다시 계산하지 않게)."""
     if team.gender not in standings:
         teams, rows = q.standings_input(season, team.gender)
         standings[team.gender] = {r["team"]["code"]: r for r in team_standings(teams, rows)}
@@ -31,6 +32,7 @@ def _team_card(team, season, standings):
 
 
 def _player_card(player, season):
+    """관심 선수 카드: 이번 시즌 누적, 마지막 경기 기록, 최근 폼. 이번 시즌 기록이 없으면 이름·소속만."""
     rows = list(PlayerMatchStat.objects.filter(player=player, match__competition__season=season,
                                                match__status__in=q.FINISHED)
                 .exclude(played_sets="00000")
@@ -68,18 +70,19 @@ def _player_card(player, season):
     }
 
 
-# attempts needed before a rate is shown (an opposite's two receptions say nothing about receiving)
+# 비율을 보여 주기 위한 최소 시도 수(아포짓이 리시브 두 번 한 것으로 리시브 실력을 말할 수 없으므로)
 MIN_GAME, MIN_SEASON = 5, 15
 
 
 def _rates(box, sets, least):
+    """공격 성공률과 리시브 효율. 시도가 least보다 적으면 None."""
     r = q.rates({**box, "sets_played": sets})
     return {"attack_pct": r["attack_pct"] if box["attack_attempts"] >= least else None,
             "receive_efficiency": r["receive_efficiency"] if box["receive_attempts"] >= least else None}
 
 
 def favorite_feed(user):
-    """Cards for each followed team (record, last and next match) and player (last game, season so far)."""
+    """회원의 관심 팀·선수 카드들(등록한 순서대로). 현재 시즌 기준."""
     season = q.resolve_season(None)
     standings = {}
     teams = [f.team for f in user.favorite_teams.select_related("team").order_by("created_at")]

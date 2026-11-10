@@ -1,6 +1,8 @@
 <script setup>
-// WEB-11: email sign-up and login. Labels on every field, password managers and paste allowed, show/hide password,
-// field errors under each field plus a focused summary at the top after a failed submit.
+// WEB-11 이메일 가입·로그인 화면(mode로 둘 중 하나). 접근성·사용성 규칙:
+//   모든 칸에 보이는 이름표, 비밀번호 관리자와 붙여넣기 허용, 비밀번호 보기/숨기기,
+//   칸마다 그 아래에 오류 문구 + 제출 실패 시 맨 위에 오류 요약(포커스를 옮겨 화면 낭독기가 바로 읽게).
+// 성공하면 ?next= 주소(이 사이트 안의 경로만)로, 없으면 홈으로 간다.
 import { computed, nextTick, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { safeNext } from '@/router'
@@ -16,15 +18,18 @@ const form = reactive({ email: '', password: '', nickname: '' })
 const errors = reactive({ email: '', password: '', nickname: '' })
 const general = ref('')
 const busy = ref(false)
-const tried = ref(false) // the summary appears only after a submit; before that, errors show under each field
+const tried = ref(false) // 오류 요약은 제출한 뒤에만 보인다(그 전에는 칸 아래에만)
 const showPw = ref(false)
 const summary = ref(null)
 const next = computed(() => safeNext(route.query.next))
+// 반대 화면(로그인 ↔ 가입) 링크. next를 그대로 넘겨 준다
 const other = computed(() => ({ path: isSignup.value ? '/login' : '/signup', query: route.query.next ? { next: route.query.next } : {} }))
 
 const LABELS = { email: '이메일', password: '비밀번호', nickname: '닉네임' }
+// 이 모드에서 보여 줄 칸들(순서대로)
 const fields = computed(() => (isSignup.value ? ['email', 'nickname', 'password'] : ['email', 'password']))
 
+// 칸 하나 검사(브라우저 쪽 1차 검사. 서버도 다시 검사한다). 통과하면 true
 function check(field) {
   const v = form[field].trim()
   let msg = ''
@@ -40,16 +45,20 @@ function check(field) {
   errors[field] = msg
   return !msg
 }
-// re-check a field that already shows an error while the user fixes it
+// 이미 오류가 보이는 칸은 고치는 동안 바로바로 다시 검사(오류가 사라지는 것을 바로 보이게)
 const recheck = (field) => { if (errors[field]) check(field) }
 
+// 오류 요약 목록(칸 이름과 문구. 누르면 그 칸으로 이동)
 const errorList = computed(() => fields.value.filter((f) => errors[f]).map((f) => ({ field: f, msg: errors[f] })))
 
+// 오류 요약으로 포커스 이동(화면이 다시 그려진 뒤에)
 async function focusSummary() {
   await nextTick()
   summary.value?.focus()
 }
 
+// 제출: 모든 칸 검사 → 가입/로그인 요청 → 성공하면 이동. 실패하면 서버 오류를 칸별 또는 전체 문구로 보여 준다
+//   429 = 시도 횟수 제한(서버의 1분당 10회), 400 = 입력 오류(칸별 메시지), 그 밖 = 연결 문제
 async function submit() {
   general.value = ''
   tried.value = true

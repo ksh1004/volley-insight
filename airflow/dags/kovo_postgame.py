@@ -1,14 +1,13 @@
-"""kovo_postgame: box scores and play-by-play of games that just ended (COL-03, COL-10, NFR-13).
+"""kovo_postgame: 방금 끝난 경기의 박스스코어와 문자중계를 수집한다(COL-03, COL-10, NFR-13: 경기 후 빠른 반영).
 
-Every 20 minutes from 14:00 to 23:40 (weekend games start at 14:00/16:00, weekday games at 19:00):
-  1. games to watch: started, not CONFIRMED games since yesterday, from PostgreSQL. None -> skip,
-     so non-game days cost no KOVO request.
-  2. refresh that season's schedule (results come from it), pick the games that have finished,
-     collect their box scores and play-by-play. Nothing finished yet -> skip.
-  3. wait until raw-archiver has written every message to HDFS /raw/
-  4. Spark curation of the season -> the games become CONFIRMED (or stay FINISHED if a check fails,
-     e.g. KOVO has not published the play-by-play yet; the next run collects them again).
-  5. analysis marts (Elo after the new results, season summaries)
+14:00부터 23:40까지 20분마다(주말 경기는 14:00/16:00, 평일 경기는 19:00 시작):
+  1. 지켜볼 경기: 어제 이후 시작했고 아직 CONFIRMED가 아닌 경기(PostgreSQL에서). 없으면 건너뜀 →
+     경기 없는 날에는 KOVO에 요청을 하나도 보내지 않는다.
+  2. 그 시즌 일정을 새로 받아(결과가 여기서 옴) 끝난 경기를 고르고, 박스스코어와 문자중계를 수집. 끝난 게 없으면 건너뜀.
+  3. raw-archiver가 모든 메시지를 HDFS /raw/에 쓸 때까지 기다림
+  4. 그 시즌 Spark 정제 → 경기가 CONFIRMED가 된다(검사에 걸리면 FINISHED로 남음. 예: KOVO가 아직 문자중계를
+     올리지 않음. 그러면 다음 실행이 다시 수집한다)
+  5. 분석 마트(새 결과를 반영한 Elo, 시즌 요약)
 """
 from datetime import timedelta
 
@@ -36,6 +35,7 @@ DEFAULT_ARGS = alerts.default_args()
 def kovo_postgame():
     @task
     def find_games_to_watch() -> dict:
+        """{시즌: [경기 번호]}. 없으면 건너뛰기(Skip) 예외로 이후 작업도 모두 건너뛴다."""
         watch = p.games_to_watch(p.now_kst())
         if not watch:
             raise AirflowSkipException("no started, unconfirmed game since yesterday")
@@ -43,6 +43,7 @@ def kovo_postgame():
 
     @task
     def collect_finished(watch: dict) -> dict:
+        """지켜볼 경기 중 끝난 경기만 수집한다. 확정된 경기는 다시 받지 않는다."""
         since = p.now_kst().date() - timedelta(days=1)
         batches, seasons, keys = [], [], []
         for season, game_nos in watch.items():
@@ -59,18 +60,22 @@ def kovo_postgame():
 
     @task.sensor(poke_interval=60, timeout=1800, mode="reschedule")
     def wait_for_raw(result: dict) -> bool:
+        """보낸 메시지가 모두 HDFS에 보관됐는가."""
         return p.raw_arrived(result["batches"])
 
     @task
     def curate(result: dict):
+        """수집한 경기가 있는 시즌을 정제한다."""
         p.run_curation(result["seasons"])
 
     @task
     def build_marts():
+        """분석 마트를 다시 만든다."""
         p.run_marts()
 
     @task
     def report(result: dict):
+        """어제 이후 경기들의 상태를 로그로 남긴다."""
         since = p.now_kst().date() - timedelta(days=1)
         for season in result["seasons"]:
             for game_no, scheduled_at, status in p.match_report(season, since):

@@ -1,5 +1,6 @@
 {% extends "admin/change_list.html" %}
-{% comment %}ADM-05: registered versions of the match model on top of the switch log.{% endcomment %}
+{% comment %}ADM-05 모델 관리 화면: 위에는 경기 예측 모델의 등록 버전 비교 표와 서비스 모델 교체 양식, 아래에는 교체 기록.
+데이터는 analytics/admin.py ModelChangeAdmin.changelist_view가 넣어 준다(versions, champion 등).{% endcomment %}
 
 {% block extrastyle %}{{ block.super }}
 <style>

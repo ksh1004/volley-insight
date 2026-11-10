@@ -1,5 +1,7 @@
 <script setup>
-// WEB-03: scoreboard, set scores, team comparison, box scores, score flow and play-by-play per set.
+// WEB-03 경기 화면: 스코어보드, 세트별 점수, 경기 프리뷰(예측·상대 전적), 두 팀 기록 비교, 선수 기록(박스스코어),
+// 세트별 점수 흐름 차트와 문자중계. 데이터 문제가 있는 경기는 스코어보드 아래에 안내를 띄운다(PIPE-10).
+// 경기 데이터는 /api/matches/{key} 한 번, 문자중계는 세트를 고를 때마다 /rallies?set=N 으로 받는다.
 import { computed, onMounted, ref, watch } from 'vue'
 import { getMatch, getRallies } from '@/api/client'
 import AsyncState from '@/components/AsyncState.vue'
@@ -14,25 +16,29 @@ import { fmtFullDate, fmtTime, num, pct } from '@/utils/format'
 const props = defineProps({ matchKey: { type: String, required: true } })
 const match = ref(null)
 const state = ref({ loading: true, error: null })
-const side = ref('home')
-const setNo = ref(1)
+const side = ref('home') // 선수 기록 표에서 보는 팀
+const setNo = ref(1) // 문자중계·점수 흐름에서 보는 세트
 const rallies = ref(null)
 const rallyState = ref({ loading: false, error: null })
 
 const done = computed(() => ['FINISHED', 'CONFIRMED'].includes(match.value?.status))
+// 'home' | 'away' → 팀 정보, 그 팀이 이겼는가(끝난 경기만)
 const team = (s) => match.value?.[s]
 const won = (s) => done.value && (s === 'home'
   ? match.value.home_sets > match.value.away_sets : match.value.away_sets > match.value.home_sets)
+// 제목 아래 한 줄: 시즌, 남녀부, 대회(라운드), 날짜와 시각
 const subtitle = computed(() => {
   const m = match.value
   const round = m.league_code === '201' ? ` ${m.round}라운드` : ''
   return `${m.season_years} 시즌 ${GENDERS[m.gender]} · ${m.competition}${round} · ${fmtFullDate(m.scheduled_at)} ${fmtTime(m.scheduled_at)}`
 })
-// PIPE-10: "3·4세트 문자중계 없음" for each unresolved data problem of this match
+// PIPE-10: 이 경기의 해결 안 된 데이터 문제마다 "3·4세트 문자중계 없음" 같은 안내 문구
 const notes = computed(() => (match.value?.data_notes?.issues || [])
   .map((i) => (i.sets.length ? `${i.sets.join('·')}세트 ${i.label}` : i.label)))
+// 모든 세트 점수의 합 [홈, 원정]
 const totals = computed(() => match.value?.set_details.reduce((acc, s) => [acc[0] + s.home_points, acc[1] + s.away_points], [0, 0]))
 
+// 두 팀 기록 비교 막대 행(CompareBars 형식)
 const compareRows = computed(() => {
   const h = match.value?.team_stats.home
   const a = match.value?.team_stats.away
@@ -49,7 +55,8 @@ const compareRows = computed(() => {
   ]
 })
 
-// box score columns (sortable; design system: sortable tables report aria-sort)
+// 선수 기록 표의 열(정렬 가능. 디자인 시스템: 정렬 표는 aria-sort로 상태를 알린다).
+// ratioSort: '성공/시도' 열을 비율로 정렬하는 함수를 만든다
 const ratioSort = (s, a) => (row) => (row[a] ? row[s] / row[a] : null)
 const BOX_COLS = [
   { key: 'name', label: '선수', left: true, sticky: true, get: (p) => p.player.name },
@@ -67,7 +74,8 @@ const BOX_COLS = [
   { key: 'errors', label: '범실' },
 ]
 
-// play-by-play grouped into rallies (one rally_no = one rally, substitution or time-out)
+// 문자중계를 랠리 단위로 묶는다(rally_no 하나 = 랠리 하나, 또는 교체·작전 타임).
+// scorer: 그 랠리의 득점 이벤트, note: 랠리가 아닌 안내(교체 등), score: 랠리가 끝난 뒤 점수
 const groups = computed(() => {
   const out = []
   for (const e of rallies.value?.events || []) {
@@ -81,7 +89,9 @@ const groups = computed(() => {
     return { ...g, scorer, note: g.events.every((e) => NON_PLAY.has(e.action)), score: `${end.home_score}:${end.away_score}` }
   })
 })
+// 팀 코드 → 'home' | 'away'
 const sideOf = (code) => (code === match.value?.home.code ? 'home' : code === match.value?.away.code ? 'away' : '')
+// 이벤트 한 줄 설명: "선수 이름 동작 결과"(예: "김연경 오픈 성공")
 const describe = (e) => {
   const who = e.player?.name || (e.team ? team(sideOf(e.team))?.name : '')
   const what = ACTIONS[e.action] || e.action
@@ -89,6 +99,7 @@ const describe = (e) => {
   return `${who ? `${who} ` : ''}${what}${result ? ` ${result}` : ''}`
 }
 
+// 고른 세트의 문자중계 불러오기(그 세트에 문자중계가 없으면 비움)
 async function loadRallies() {
   if (!match.value?.rally_sets.includes(setNo.value)) { rallies.value = null; return }
   rallyState.value = { loading: true, error: null }
@@ -101,6 +112,7 @@ async function loadRallies() {
   }
 }
 
+// 경기 데이터를 받고, 문자중계가 있는 첫 세트를 골라 불러온다
 onMounted(async () => {
   try {
     match.value = await getMatch(props.matchKey)

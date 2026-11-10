@@ -1,7 +1,7 @@
-"""Matches, set scores, box scores and play-by-play (design.md ERD 2.1).
+"""경기, 세트 점수, 박스스코어, 문자중계 모델(설계서 ERD 2.1).
 
-Filled by the Spark curation job (spark_jobs/curate_kovo.py) from the raw KOVO responses.
-Field names map to KOVO fields as noted; see collectors/README.md for how they were verified.
+Spark 정제 작업(spark_jobs/curate_kovo.py)이 KOVO 원본 응답으로 채운다.
+필드 이름과 KOVO 필드의 대응은 주석에 적었다. 어떻게 확인했는지는 collectors/README.md 참고.
 """
 from django.db import models
 
@@ -9,12 +9,15 @@ from league.models import Competition, Gender, PipelineModel, Player, Team
 
 
 class Match(PipelineModel):
+    """경기 하나. 공개 키는 '시즌 코드-경기 번호'(matches.serializers.match_key). 세트 수는 홈/원정이 이긴 세트."""
+
     class Status(models.TextChoices):
+        """경기 상태. SCHEDULED → (LIVE) → FINISHED → CONFIRMED 순서로 바뀐다."""
         SCHEDULED = "SCHEDULED", "예정"
         LIVE = "LIVE", "진행 중"
-        FINISHED = "FINISHED", "종료"          # official result exists
-        CONFIRMED = "CONFIRMED", "기록 확정"    # box score + play-by-play loaded and checked
-        CANCELLED = "CANCELLED", "미진행"      # no result 2+ days after its date (series ended early, ...)
+        FINISHED = "FINISHED", "종료"          # 공식 결과가 있음
+        CONFIRMED = "CONFIRMED", "기록 확정"    # 박스스코어 + 문자중계를 적재하고 품질 검사까지 통과
+        CANCELLED = "CANCELLED", "미진행"      # 예정일 2일 뒤에도 결과 없음(시리즈가 일찍 끝난 경우 등)
 
     competition = models.ForeignKey(Competition, on_delete=models.CASCADE, related_name="matches")
     game_no = models.PositiveIntegerField(help_text="KOVO gnum, unique within a season")
@@ -50,6 +53,7 @@ class Match(PipelineModel):
 
 
 class SetScore(PipelineModel):
+    """세트 하나의 점수와 경기 시간(분)."""
     match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="sets")
     set_no = models.PositiveSmallIntegerField()
     home_points = models.PositiveSmallIntegerField()
@@ -63,7 +67,9 @@ class SetScore(PipelineModel):
 
 
 class BoxScore(PipelineModel):
-    """Columns shared by team and player box scores. KOVO field in brackets."""
+    """팀과 선수 박스스코어가 함께 쓰는 기록 컬럼(추상 모델). 주석은 KOVO 필드 이름.
+    공격: 시도/성공/상대 블로킹에 막힘/범실, 서브: 시도/에이스/범실, 블로킹: 시도/성공/유효/어시스트,
+    리시브: 시도/정확/실패, 디그: 시도/성공, 세트(토스): 시도/성공."""
 
     attack_attempts = models.PositiveSmallIntegerField(default=0)   # att
     attack_success = models.PositiveSmallIntegerField(default=0)    # ats
@@ -91,6 +97,7 @@ class BoxScore(PipelineModel):
 
 
 class TeamMatchStat(BoxScore):
+    """경기 하나에서 팀 하나의 기록."""
     match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="team_stats")
     team = models.ForeignKey(Team, on_delete=models.PROTECT, related_name="match_stats")
     points = models.PositiveSmallIntegerField(default=0, help_text="all points incl. opponent errors (point)")
@@ -103,6 +110,7 @@ class TeamMatchStat(BoxScore):
 
 
 class PlayerMatchStat(BoxScore):
+    """경기 하나에서 선수 하나의 기록. played_sets는 세트별 출전 여부를 '1'/'0'으로 이은 문자열."""
     match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="player_stats")
     player = models.ForeignKey(Player, on_delete=models.PROTECT, related_name="match_stats")
     team = models.ForeignKey(Team, on_delete=models.PROTECT, related_name="player_match_stats")
@@ -119,7 +127,8 @@ class PlayerMatchStat(BoxScore):
 
 
 class PlayerAttackStat(PipelineModel):
-    """Attack by type. KOVO prefix: oa OPEN, ta TIME_DIFF, ma MOVING, ba BACK, sa QUICK, csa QUICK_OPEN."""
+    """선수 기록의 공격 종류별 세부(오픈, 시간차, 이동, 후위, 속공, 퀵오픈).
+    KOVO 필드 접두사: oa 오픈, ta 시간차, ma 이동, ba 후위, sa 속공, csa 퀵오픈."""
 
     class AttackType(models.TextChoices):
         OPEN = "OPEN", "오픈"
@@ -142,7 +151,8 @@ class PlayerAttackStat(PipelineModel):
 
 
 class RallyEvent(PipelineModel):
-    """One play-by-play event. Scores are the running score after this event, computed by Spark."""
+    """문자중계 이벤트 하나(서브, 리시브, 공격, 득점, 교체 등). 점수는 이 이벤트 직후의 누적 점수로 Spark가 계산한다.
+    동작·결과 코드표는 요구사항 부록 A(화면에서는 frontend/src/constants/volley.js)."""
 
     match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="rally_events")
     set_no = models.PositiveSmallIntegerField()

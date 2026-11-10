@@ -1,10 +1,13 @@
-"""Analysis marts (design.md ERD 2.2), written by spark_jobs/build_marts.py.
+"""분석 결과 테이블들(설계서 ERD 2.2). 웹 앱은 읽기만 하고, 각 테이블은 아래 Spark 작업이 채운다.
 
-TeamRating          Elo after every match (ANL-01)
-TeamSeasonSummary   team record + indicators per competition, incl. side-out / break rates (ANL-02, ANL-11)
-PlayerSeasonSummary player indicators per competition + percentile within position (ANL-05)
-Predictions (MatchPrediction, ModelVersion) come with the prediction model (ANL-03, ANL-09).
-PlayerType, PlayerStyle: player groups (K-means) and similar players, from spark_jobs/player_types.py (ANL-06).
+TeamRating          경기마다의 팀 Elo (ANL-01)                                   ← build_marts.py
+TeamSeasonSummary   대회별 팀 성적 + 지표, 사이드아웃/브레이크율 포함 (ANL-02, ANL-11) ← build_marts.py
+PlayerSeasonSummary 대회별 선수 지표 + 같은 포지션 안 백분위 (ANL-05)            ← build_marts.py
+ModelVersion, MatchPrediction  예측 모델 버전과 경기 전 예측 (ANL-03, ANL-09)      ← predict_matches.py
+PredictionBacktest  모델 버전의 워크포워드 백테스트 (ANL-10)                     ← train_model.py
+PlayerType, PlayerStyle  선수 유형(K-means 그룹)과 비슷한 선수 (ANL-06)          ← player_types.py
+PlayerRating, PlayerCareerRating  포지션별 능력치 카드(시즌, 통산)               ← player_ratings.py
+ModelChange         관리자가 서비스 모델을 바꾼 기록 (ADM-05)                     ← Django 관리자 화면
 """
 from django.conf import settings
 from django.db import models
@@ -14,8 +17,8 @@ from matches.models import Match
 
 
 class TeamRating(PipelineModel):
-    """Team Elo after one match. The first row of a season starts from the previous season's rating,
-    pulled a third of the way back to 1500 (rosters change between seasons)."""
+    """경기 하나를 마친 뒤의 팀 Elo. 시즌 첫 행은 지난 시즌 점수를 1500 쪽으로 3분의 1 되돌린 값에서 시작한다
+    (시즌 사이에 선수단이 바뀌므로)."""
 
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="ratings")
     season = models.ForeignKey(Season, on_delete=models.CASCADE, related_name="+")
@@ -33,7 +36,7 @@ class TeamRating(PipelineModel):
 
 
 class Rates(models.Model):
-    """Indicators shared by team and player season summaries (null when there were no attempts)."""
+    """팀·선수 시즌 요약이 함께 쓰는 비율 지표(추상 모델). 시도가 없었으면 NULL."""
 
     attack_success_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True)
     attack_efficiency = models.DecimalField(max_digits=5, decimal_places=2, null=True)
@@ -49,6 +52,8 @@ class Rates(models.Model):
 
 
 class TeamSeasonSummary(PipelineModel, Rates):
+    """팀 × 대회 하나의 요약: 승패·승점·세트·점수, 순위(정규리그), 지표, 마지막 Elo, 상황별 효율."""
+
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="season_summaries")
     competition = models.ForeignKey(Competition, on_delete=models.CASCADE, related_name="team_summaries")
     rank = models.PositiveSmallIntegerField(null=True)
@@ -63,7 +68,7 @@ class TeamSeasonSummary(PipelineModel, Rates):
     sideout_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, help_text="% of receiving rallies won")
     break_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, help_text="% of serving rallies won")
     final_rating = models.DecimalField(max_digits=7, decimal_places=2, null=True, help_text="Elo after its last match")
-    # play-by-play situations (ANL-11), from 2023-24 on
+    # 문자중계로 계산한 상황별 효율(ANL-11), 2023-24부터
     attack_after_good_receive = models.DecimalField(max_digits=5, decimal_places=2, null=True,
                                                     help_text="% of first attacks killed after an excellent reception")
     attack_after_poor_receive = models.DecimalField(max_digits=5, decimal_places=2, null=True,
@@ -96,7 +101,7 @@ class PlayerSeasonSummary(PipelineModel, Rates):
 
 
 class ModelVersion(PipelineModel):
-    """A registered MLflow model version (requirements 2.6), mirrored when it is used for predictions."""
+    """MLflow에 등록된 모델 버전(요구사항 2.6). 예측에 쓰일 때 서비스 DB에도 옮겨 적는다(화면이 MLflow 없이 읽도록)."""
 
     name = models.CharField(max_length=50, help_text="MLflow registered model, e.g. match-winner")
     version = models.PositiveIntegerField()
@@ -115,8 +120,8 @@ class ModelVersion(PipelineModel):
 
 
 class MatchPrediction(PipelineModel):
-    """Pre-match prediction (ANL-03). Written only while the match has not started; is_correct is filled
-    after the result is known (ANL-10), so the hit rate shown on the site is never a back-fitted one."""
+    """경기 전 예측(ANL-03). 경기가 시작하기 전까지만 쓰이고, 결과가 나오면 is_correct가 채워진다(ANL-10).
+    그래서 사이트의 적중률은 결과를 보고 끼워 맞춘 값이 절대 아니다."""
 
     match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="predictions")
     model_version = models.ForeignKey(ModelVersion, on_delete=models.PROTECT, related_name="predictions")
@@ -134,9 +139,9 @@ class MatchPrediction(PipelineModel):
 
 
 class PlayerType(PipelineModel):
-    """Playing-style group from K-means on per-set records (ANL-06), one set of types per gender.
+    """세트당 기록을 K-means로 나눈 플레이 스타일 그룹(ANL-06). 성별마다 유형 묶음이 따로 있다.
 
-    Written by spark_jobs/player_types.py; every run replaces all rows (cluster numbers are not stable between runs).
+    spark_jobs/player_types.py가 쓰고, 실행마다 모든 행을 바꾼다(그룹 번호가 실행마다 같다는 보장이 없어서).
     """
 
     gender = models.CharField(max_length=1)
@@ -156,7 +161,7 @@ class PlayerType(PipelineModel):
 
 
 class PlayerStyle(PipelineModel):
-    """A player's season record as a style: group, per-set features and the most similar players (ANL-06, WEB-07)."""
+    """선수-시즌 하나의 스타일: 속한 그룹, 세트당 특징 값과 z, 가장 비슷한 선수들(ANL-06, WEB-07)."""
 
     player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="styles")
     season = models.ForeignKey(Season, on_delete=models.CASCADE, related_name="+")
@@ -175,9 +180,8 @@ class PlayerStyle(PipelineModel):
 
 
 class PlayerRating(PipelineModel):
-    """Position rating of a player-season for the player card: each ability and an overall score, 1-99 where 60 is
-    the average qualified player of the same gender and position (72 = one standard deviation better).
-    Written by spark_jobs/player_ratings.py; the abilities and why they were chosen are described there."""
+    """선수 카드의 시즌 능력치: 능력치별 점수와 종합 점수(1~99). 60 = 같은 성별·포지션 순위 자격 선수의 평균,
+    72 = 표준편차 1만큼 위. spark_jobs/player_ratings.py가 쓰고, 능력치 구성과 그 이유는 그 파일 머리말에 있다."""
 
     player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="ratings")
     season = models.ForeignKey(Season, on_delete=models.CASCADE, related_name="+")
@@ -199,9 +203,9 @@ class PlayerRating(PipelineModel):
 
 
 class PlayerCareerRating(PipelineModel):
-    """Career card of a player at one position: each ability is his season scores averaged with the sets played as
-    weights (each season was scored against its own era), the record behind it pooled over his seasons, and the
-    overall the weighted average of those abilities. Written by spark_jobs/player_ratings.py with PlayerRating."""
+    """한 포지션에서의 통산 카드: 능력치마다 시즌 점수를 출전 세트로 가중 평균(각 시즌이 그 시기 기준으로 매겨져
+    있어 시대가 달라도 같은 눈금), 근거 기록은 시즌 기록을 모두 합친 값, 종합은 그 능력치들의 가중 평균.
+    spark_jobs/player_ratings.py가 PlayerRating과 함께 쓴다."""
 
     player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="career_ratings")
     gender = models.CharField(max_length=1)
@@ -227,8 +231,8 @@ class PlayerCareerRating(PipelineModel):
 
 
 class PredictionBacktest(PipelineModel):
-    """Walk-forward test of a model version (ANL-10): each season predicted by a model trained only on the seasons
-    before it, with the pre-match Elo probability of the same match as the baseline. Written by train_model.py."""
+    """모델 버전 하나의 워크포워드 시험(ANL-10): 각 시즌을 그 이전 시즌들로만 학습한 모델로 예측한 결과와,
+    비교 기준인 같은 경기의 경기 전 Elo 확률. train_model.py가 쓴다."""
 
     match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="backtests")
     model_version = models.ForeignKey(ModelVersion, on_delete=models.CASCADE, related_name="backtests")
@@ -245,8 +249,8 @@ class PredictionBacktest(PipelineModel):
 
 
 class ModelChange(models.Model):
-    """ADM-05: an admin moved the `champion` alias (the serving model) in the MLflow registry. Written by the admin
-    page, so the reason and the person stay on record next to MLflow's own history."""
+    """ADM-05: 관리자가 MLflow의 `champion` 별칭(서비스 모델)을 옮긴 기록. 관리자 화면이 쓰며,
+    MLflow 자체 이력 옆에 '누가, 왜' 바꿨는지를 남긴다."""
 
     model_name = models.CharField("모델", max_length=50)
     from_version = models.PositiveIntegerField("이전 버전", null=True, blank=True)

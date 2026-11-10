@@ -1,3 +1,4 @@
+# Airflow 이미지에 더하는 패키지: Spark 제출 연동, PySpark(드라이버), Kafka 클라이언트(수집기), HTTP, PostgreSQL
 apache-airflow-providers-apache-spark
 pyspark==3.5.5
 confluent-kafka==2.10.1
