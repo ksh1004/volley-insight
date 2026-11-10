@@ -158,6 +158,14 @@ class PlayerRatingApiTests(TestCase):
         assert self.client.get("/api/ratings", {"gender": "M", "position": "XX"}).status_code == 400
         assert self.client.get("/api/ratings", {"position": "OP"}).status_code == 400  # gender is required
 
+    def test_career_board_ranks_careers_with_three_qualified_seasons(self):
+        r = self.client.get("/api/ratings", {"scope": "career", "gender": "M", "position": "OP"}).json()
+        assert r["scope"] == "career" and r["season"] is None
+        assert [(x["rank"], x["player"]["name"], x["overall"]) for x in r["rows"]] == [(1, "두번째", 80), (2, "아라우조", 78)]
+        assert r["rows"][1]["team"]["code"] == "1009" and r["rows"][1]["first"]["code"] == "021"
+        with_all = self.client.get("/api/ratings", {"scope": "career", "gender": "M", "position": "OP", "all": "1"}).json()
+        assert with_all["rows"][0]["player"]["name"] == "신인" and with_all["rows"][0]["rank"] is None
+
     def test_player_page_carries_every_season_and_the_career_card(self):
         ratings = self.client.get("/api/players/1000525", {"season": "022"}).json()["ratings"]
         old, now = ratings["seasons"]  # oldest first

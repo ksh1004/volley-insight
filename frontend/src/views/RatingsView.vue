@@ -1,6 +1,7 @@
 <script setup>
 // Position ratings by position (player cards, spark_jobs/player_ratings.py): the top three as small cards, then every
 // qualified player with the overall and each ability; any column sorts (rows slide to their new place).
+// Two views: one season, or 역대 통산 (career cards; ranked = 3+ qualified seasons). ?scope=career opens the latter.
 // Old rows stay (dimmed) while another position or season loads, so switching never blanks the page.
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
@@ -9,13 +10,22 @@ import AsyncState from '@/components/AsyncState.vue'
 import FilterBar from '@/components/FilterBar.vue'
 import ScoreRing from '@/components/ScoreRing.vue'
 import SortableTable from '@/components/SortableTable.vue'
-import { ABILITY_HELP, POSITION_NAMES, POSITION_ORDER, bandOf } from '@/constants/ratings'
+import { ABILITY_HELP, POSITION_NAMES, POSITION_ORDER, bandOf, yearsShort } from '@/constants/ratings'
 import { useFiltersStore } from '@/stores/filters'
 
 const filters = useFiltersStore()
 const route = useRoute()
 const position = ref(POSITION_ORDER.includes(route.query.position) ? route.query.position : 'OH')
 const includeAll = ref(false)
+const scope = ref(route.query.scope === 'career' ? 'career' : 'season')
+const career = computed(() => scope.value === 'career')
+// keep ?scope= in the address without a router navigation (App.vue remounts pages on every route change)
+watch(scope, (v) => {
+  const url = new URL(window.location.href)
+  if (v === 'career') url.searchParams.set('scope', 'career')
+  else url.searchParams.delete('scope')
+  history.replaceState(history.state, '', url)
+})
 const data = ref(null)
 const state = ref({ loading: true, error: null })
 
@@ -24,7 +34,8 @@ async function load() {
   const mine = ++requestNo
   state.value = { loading: true, error: null }
   try {
-    const res = await getRatings({ season: filters.season, gender: filters.gender, position: position.value,
+    const res = await getRatings({ season: career.value ? undefined : filters.season, gender: filters.gender,
+                                   position: position.value, scope: career.value ? 'career' : undefined,
                                    all: includeAll.value ? 1 : undefined })
     if (mine === requestNo) data.value = res
   } catch (e) {
@@ -40,15 +51,15 @@ onMounted(async () => {
   else if (!['M', 'F'].includes(filters.gender)) filters.set({ gender: 'M' }) // ratings are per division
   await load()
 })
-watch(() => [filters.season, filters.gender, position.value, includeAll.value], load)
+watch(() => [career.value || filters.season, filters.gender, position.value, includeAll.value], load)
 
 // early in a season few players have 10+ sets: say so and offer the season before
 const ranked = computed(() => (data.value?.rows || []).filter((r) => r.rank).length)
 const previousSeason = computed(() => {
-  const i = filters.seasons.findIndex((s) => s.code === data.value?.season.code)
+  const i = filters.seasons.findIndex((s) => s.code === data.value?.season?.code)
   return i >= 0 ? filters.seasons[i + 1] : null
 })
-const early = computed(() => data.value && data.value.season.code === filters.seasons[0]?.code && ranked.value < 8)
+const early = computed(() => data.value?.season && data.value.season.code === filters.seasons[0]?.code && ranked.value < 8)
 
 const top3 = computed(() => (data.value?.rows || []).filter((r) => r.rank).slice(0, 3))
 // the player's best counted ability, e.g. "블로킹 84" under his name on the podium
@@ -57,21 +68,34 @@ const strength = (r) => {
     .sort((a, b) => r.scores[b.key] - r.scores[a.key])[0]
   return best ? `${best.label} ${r.scores[best.key]}` : ''
 }
+const period = (r) => `${yearsShort(r.first.years)}${r.last.code === r.first.code ? '' : ` ~ ${yearsShort(r.last.years)}`}`
 const columns = computed(() => [
   { key: 'rank', label: '순위', get: (r) => r.rank ?? 999 , fmt: (r) => r.rank ?? '-' },
   { key: 'name', label: '선수', left: true, sticky: true, get: (r) => r.player.name },
-  { key: 'team', label: '팀', left: true, get: (r) => r.team.name },
+  ...(data.value?.scope === 'career'
+    ? [{ key: 'period', label: '기간', left: true, get: (r) => r.first.code, fmt: period },
+       { key: 'seasons', label: '시즌', get: (r) => r.seasons, fmt: (r) => `${r.seasons} (자격 ${r.qualified_seasons})` }]
+    : [{ key: 'team', label: '팀', left: true, get: (r) => r.team.name }]),
   { key: 'overall', label: '종합', strong: true, get: (r) => r.overall },
   ...(data.value?.abilities || []).map((a) => ({ key: `ab_${a.key}`, ability: a.key,
     label: a.weight ? `${a.label} ${a.weight}%` : `${a.label} (참고)`, get: (r) => r.scores[a.key] })),
-  { key: 'sets', label: '세트' },
+  ...(data.value?.scope === 'career'
+    ? [{ key: 'best', label: '최고 시즌', get: (r) => r.best?.overall,
+         fmt: (r) => (r.best ? `${r.best.overall} (${yearsShort(r.best.season.years)})` : '-') }]
+    : []),
+  { key: 'sets', label: '세트', fmt: (r) => r.sets.toLocaleString() },
 ])
-const playerLink = (r) => ({ path: `/players/${r.player.code}`, query: { season: data.value.season.code } })
+const playerLink = (r) => ({ path: `/players/${r.player.code}`,
+                             query: data.value.season ? { season: data.value.season.code } : { card: 'career' } })
 </script>
 
 <template>
   <h1>포지션별 능력치</h1>
-  <FilterBar>
+  <div v-glider class="tabs" role="group" aria-label="기간">
+    <button type="button" class="tab" :aria-pressed="!career" @click="scope = 'season'">시즌별</button>
+    <button type="button" class="tab" :aria-pressed="career" @click="scope = 'career'">역대 통산</button>
+  </div>
+  <FilterBar :hide-season="career">
     <label class="all small"><input v-model="includeAll" type="checkbox"> 순위 자격 미달 선수도 보기</label>
   </FilterBar>
   <div v-glider class="tabs" role="group" aria-label="포지션">
@@ -87,11 +111,11 @@ const playerLink = (r) => ({ path: `/players/${r.player.code}`, query: { season:
           {{ previousSeason.years.replace('-', '–') }} 시즌 보기</button>
       </p>
       <Transition name="swap" mode="out-in">
-        <div v-if="top3.length" :key="`${data.season.code}-${data.gender}-${data.position}`" class="podium">
+        <div v-if="top3.length" :key="`${data.season?.code || 'career'}-${data.gender}-${data.position}`" class="podium">
           <RouterLink v-for="(r, i) in top3" :key="r.player.code" v-reveal="i" :to="playerLink(r)" class="mini lift">
             <span class="place">{{ r.rank }}위</span>
             <ScoreRing :value="r.overall" :size="68" />
-            <span class="nm"><b>{{ r.player.name }}</b><span class="muted small">{{ r.team.name }}</span>
+            <span class="nm"><b>{{ r.player.name }}</b><span class="muted small">{{ data.season ? r.team.name : `${period(r)} · ${r.seasons}시즌` }}</span>
               <span v-if="strength(r)" class="small best">강점 {{ strength(r) }}</span></span>
           </RouterLink>
         </div>
@@ -99,16 +123,17 @@ const playerLink = (r) => ({ path: `/players/${r.player.code}`, query: { season:
 
       <section class="card">
         <div class="card-head">
-          <h2>{{ data.position_name }} <span class="muted small">{{ data.season.years.replace('-', '–') }} 정규리그 ·
-            {{ data.rows.filter((r) => r.rank).length }}명</span></h2>
+          <h2>{{ data.position_name }} <span class="muted small">{{ data.season ? `${data.season.years.replace('-', '–')} 정규리그`
+            : '역대 통산 · 순위 자격 시즌 3번 이상' }} · {{ data.rows.filter((r) => r.rank).length }}명</span></h2>
         </div>
         <SortableTable v-if="data.rows.length" :columns="columns" :rows="data.rows" :row-key="(r) => r.player.code"
                        :initial-sort="{ key: 'overall', dir: 'desc' }" :caption="`${data.position_name} 능력치 순위`">
           <template #cell-name="{ row }">
             <RouterLink :to="playerLink(row)">{{ row.player.name }}</RouterLink>
-            <span v-if="row.provisional" class="prov" title="출전이 적어 평균 쪽으로 당긴 잠정 점수">잠정</span>
+            <span v-if="row.provisional" class="prov" :title="data.season ? '출전이 적어 평균 쪽으로 당긴 잠정 점수'
+              : '순위 자격 시즌이 3번 미만이라 역대 순위에서 빠져요'">{{ data.season ? '잠정' : '순위 밖' }}</span>
           </template>
-          <template #cell-team="{ row }"><RouterLink :to="`/teams/${row.team.code}`">{{ row.team.name }}</RouterLink></template>
+          <template #cell-team="{ row }"><RouterLink v-if="row.team" :to="`/teams/${row.team.code}`">{{ row.team.name }}</RouterLink></template>
           <template v-for="a in data.abilities" :key="a.key" #[`cell-ab_${a.key}`]="{ row }">
             <span class="cell" :title="ABILITY_HELP[a.key]">
               <i class="mini-bar" :class="bandOf(row.scores[a.key])" :style="{ width: `${(row.scores[a.key] || 0) / 99 * 36}px` }" />
@@ -116,7 +141,7 @@ const playerLink = (r) => ({ path: `/players/${r.player.code}`, query: { season:
             </span>
           </template>
         </SortableTable>
-        <p v-else class="empty">이 시즌 이 포지션에 순위 자격을 갖춘 선수가 없습니다.</p>
+        <p v-else class="empty">{{ data.season ? '이 시즌' : '역대' }} 이 포지션에 순위 자격을 갖춘 선수가 없습니다.</p>
         <p class="small muted note">{{ data.scale }} 열 제목을 누르면 그 능력치 순으로 정렬돼요.
           비중(%)은 종합에서의 몫이고, '참고' 항목은 종합에 넣지 않아요.</p>
       </section>

@@ -1,6 +1,7 @@
 """Match prediction features (ANL-03): one row per match, using only what was known before it started.
 
-  inputs   HDFS /curated/kovo/{match, set_score, team_match_stat}, /marts/kovo/match_elo (pre-match Elo)
+  inputs   HDFS /curated/kovo/{match, set_score, team_match_stat, player_match_stat}, /marts/kovo/match_elo
+           (pre-match Elo), /marts/kovo/player_rating (player cards)
   output   HDFS /features/kovo/match/  (Parquet; finished matches carry the label, upcoming ones do not)
 
 Point-in-time rule: every team value comes from the team's matches strictly before this match ("as-of"
@@ -14,6 +15,10 @@ features (home minus away unless noted)
   attack, receive           season to date: attack success %, receive efficiency %
   block, ace, error         season to date: per set
   rest                      days since the previous match (capped at 14)
+  squad                     roster quality: overall of the players who played for the team earlier this season,
+                            each from his latest player card of the two seasons before (never this season's),
+                            averaged with this season's sets as weights (player_ratings.py -> /marts/kovo/player_rating)
+  squad_known               share of those sets by players who have such a card (new foreigners and rookies do not)
   h2h_rate, h2h_n           home team's win rate against this opponent in the last 2 years (smoothed), meetings
   postseason, men           context flags
 label
@@ -36,7 +41,8 @@ BOX = ["attack_success", "attack_attempts", "receive_excellent", "receive_errors
        "block_success", "serve_aces", "errors"]
 SET_SCORES = {(3, 0): 0, (3, 1): 1, (3, 2): 2, (2, 3): 3, (1, 3): 4, (0, 3): 5}
 FEATURE_COLS = ["elo_diff", "elo_prob", "form_win", "form_setdiff", "form_pointdiff", "pointdiff", "attack", "receive",
-                "block", "ace", "error", "rest", "h2h_rate", "h2h_n", "postseason", "men"]
+                "block", "ace", "error", "rest", "h2h_rate", "h2h_n", "postseason", "men", "squad", "squad_known"]
+PRIOR_SEASONS = 2  # a player's card counts for the squad feature for this many seasons after it
 
 
 def team_log(finished, team_stats, set_scores):
@@ -94,6 +100,46 @@ def as_of(matches, log):
                       *[F.coalesce(F.col(f"h_{c}") - F.col(f"a_{c}"), F.lit(0.0)).alias(c) for c in cols])
 
 
+def squad_strength(matches, finished, player_stats, ratings):
+    """squad / squad_known per match (home minus away): see the module docstring. Uses the team's matches strictly
+    before this one in the same season; a team's first match of a season has no value (0 = no difference)."""
+    season_no = lambda c: F.col(c).cast("int")  # noqa: E731
+    played = (player_stats.join(finished.select("season_code", "game_no", "ts"), ["season_code", "game_no"])
+              .select("season_code", "game_no", "ts", F.col("team_code").alias("team"), "player_code",
+                      (F.length("played_sets") - F.length(F.regexp_replace("played_sets", "1", ""))).alias("sets"))
+              .where("sets > 0"))
+    cards = ratings.where(F.col("overall").isNotNull()).select(
+        F.col("season_code").alias("r_season"), "player_code", F.col("overall").cast("double").alias("overall"))
+    pairs = played.select("season_code", "player_code").distinct().join(cards, "player_code") \
+        .where((season_no("r_season") < season_no("season_code"))
+               & (season_no("r_season") >= season_no("season_code") - PRIOR_SEASONS))
+    latest = Window.partitionBy("season_code", "player_code").orderBy(F.desc("r_season"))
+    prior = pairs.withColumn("_n", F.row_number().over(latest)).where("_n = 1").select("season_code", "player_code", "overall")
+    per_match = (played.join(prior, ["season_code", "player_code"], "left")
+                 .groupBy("season_code", "game_no", "ts", "team")
+                 .agg(F.sum(F.when(F.col("overall").isNotNull(), F.col("sets") * F.col("overall"))).alias("w"),
+                      F.sum(F.when(F.col("overall").isNotNull(), F.col("sets"))).alias("known"),
+                      F.sum("sets").alias("all")).fillna(0, subset=["w", "known"]))
+    season = Window.partitionBy("team", "season_code").orderBy("ts").rowsBetween(Window.unboundedPreceding, 0)
+    state = per_match.select("team", F.col("season_code").alias("log_season"), F.col("ts").alias("log_ts"),
+                             (F.sum("w").over(season) / F.sum("known").over(season)).alias("squad"),
+                             (F.sum("known").over(season) / F.sum("all").over(season)).alias("squad_known"))
+    sides = matches.select("season_code", "game_no", "ts",
+                           F.explode(F.array(F.struct(F.lit("home").alias("side"), F.col("home_code").alias("team")),
+                                             F.struct(F.lit("away").alias("side"), F.col("away_code").alias("team")))).alias("s")) \
+        .select("season_code", "game_no", "ts", "s.*")
+    j = sides.join(state, "team").where((F.col("log_ts") < F.col("ts")) & (F.col("log_season") == F.col("season_code")))
+    last = Window.partitionBy("season_code", "game_no", "side").orderBy(F.desc("log_ts"))
+    j = j.withColumn("_n", F.row_number().over(last)).where("_n = 1")
+    cols = ["squad", "squad_known"]
+    home = j.where("side = 'home'").select("season_code", "game_no", *[F.col(c).alias(f"h_{c}") for c in cols])
+    away = j.where("side = 'away'").select("season_code", "game_no", *[F.col(c).alias(f"a_{c}") for c in cols])
+    return matches.select("season_code", "game_no").join(home, ["season_code", "game_no"], "left") \
+        .join(away, ["season_code", "game_no"], "left") \
+        .select("season_code", "game_no",
+                *[F.coalesce(F.col(f"h_{c}") - F.col(f"a_{c}"), F.lit(0.0)).alias(c) for c in cols])
+
+
 def head_to_head(matches, finished):
     prior = finished.select(F.col("ts").alias("p_ts"), F.col("home_code").alias("p_home"), F.col("away_code").alias("p_away"),
                             F.when(F.col("home_sets") > F.col("away_sets"), F.col("home_code"))
@@ -132,6 +178,8 @@ def main():
              .withColumn("elo_prob", F.coalesce("elo_home_win_prob", F.lit(0.5)))
              .join(as_of(matches, log), ["season_code", "game_no"], "left")
              .join(head_to_head(matches, finished), ["season_code", "game_no"], "left")
+             .join(squad_strength(matches, finished, spark.read.parquet(f"{CURATED}/player_match_stat"),
+                                  spark.read.parquet(f"{MARTS}/player_rating")), ["season_code", "game_no"], "left")
              .withColumn("home_win", F.when(F.col("set_score").isNotNull(), (F.col("set_score") < 3).cast("double"))))
     feats = feats.select("season_code", "game_no", "league_code", "gender", "home_code", "away_code", "game_date",
                          "status", *FEATURE_COLS, "set_score", "home_win").cache()

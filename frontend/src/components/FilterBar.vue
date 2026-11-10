@@ -1,15 +1,15 @@
 <script setup>
-// Season select + men/women toggle, bound to the shared filters store.
+// Season select (hide-season leaves it out) + men/women toggle, bound to the shared filters store.
 import { GENDERS } from '@/constants/volley'
 import { useFiltersStore } from '@/stores/filters'
 
-defineProps({ allGenders: Boolean })
+defineProps({ allGenders: Boolean, hideSeason: Boolean })
 const filters = useFiltersStore()
 </script>
 
 <template>
   <div class="filter-bar">
-    <select :value="filters.season" aria-label="시즌" @change="filters.set({ season: $event.target.value })">
+    <select v-if="!hideSeason" :value="filters.season" aria-label="시즌" @change="filters.set({ season: $event.target.value })">
       <option v-for="s in filters.seasons" :key="s.code" :value="s.code">{{ s.years.replace('-', '–') }} 시즌</option>
     </select>
     <div v-glider class="tabs" role="group" aria-label="남녀부">

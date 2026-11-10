@@ -17,6 +17,7 @@ const props = defineProps({
   ratings: { type: Object, required: true }, // /api/players/{code} `ratings`: {seasons (oldest first), careers}
   season: { type: String, default: '' }, // the page's season: its card is shown first when there is one
   gender: { type: String, required: true },
+  preferCareer: Boolean, // opened from the all-time board: start on 통산
 })
 
 // a second career (another position) only when he played it for 2+ seasons; otherwise it repeats a season card
@@ -29,7 +30,7 @@ const items = computed(() => [...careers.value, ...seasons.value])
 
 const pick = ref('')
 function defaultPick() {
-  const s = seasons.value.find((x) => x.season.code === props.season)
+  const s = props.preferCareer ? null : seasons.value.find((x) => x.season.code === props.season)
   return keyOf(s || careers.value[0] || seasons.value.at(-1))
 }
 pick.value = defaultPick()
@@ -182,7 +183,8 @@ const summary = computed(() => {
           3번 이상인 같은 성별·포지션 선수끼리 비교해요.</template>
         <template v-else>종합 = 능력치 점수의 가중 평균(괄호 안 % 비중). 같은 성별·포지션의 순위 자격 선수(그 시즌과 앞 두
           시즌)와 비교했고, 기록이 적으면 평균 쪽으로 당겨 계산해요.</template>
-        <RouterLink :to="{ path: '/ratings', query: { position: card.position, gender } }">포지션별 순위 보기 →</RouterLink>
+        <RouterLink :to="{ path: '/ratings', query: { position: card.position, gender, scope: isCareer ? 'career' : undefined } }">
+          {{ isCareer ? '역대 순위 보기' : '포지션별 순위 보기' }} →</RouterLink>
       </p>
     </div>
   </div>

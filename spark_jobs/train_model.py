@@ -49,7 +49,7 @@ FEATURES = os.environ.get("FEATURES_PATH", "hdfs://namenode:9000/features/kovo")
 EXPERIMENT = "match-winner"
 MODEL_NAME = "match-winner"
 FEATURE_COLS = ["elo_diff", "elo_prob", "form_win", "form_setdiff", "form_pointdiff", "pointdiff", "attack", "receive",
-                "block", "ace", "error", "rest", "h2h_rate", "h2h_n", "postseason", "men"]
+                "block", "ace", "error", "rest", "h2h_rate", "h2h_n", "postseason", "men", "squad", "squad_known"]
 BACKTEST_SEASONS = 4
 MERGE_SQL = Path(__file__).resolve().parent / "sql" / "merge_backtest.sql"
 SET_SCORES = ["3:0", "3:1", "3:2", "2:3", "1:3", "0:3"]

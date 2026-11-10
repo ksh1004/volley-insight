@@ -12,6 +12,8 @@ plus an overall score. Agreed with the user on 2026-11-09 after a data study (nu
     -> career card per player and position: each ability = the season scores averaged with the sets played as
        weights (every season is already scored against its own era), the record behind it pooled over the seasons
     -> PostgreSQL player_rating, player_rating_career (full refresh, sql/merge_player_ratings.sql)
+    -> HDFS /marts/kovo/player_rating (season, player, position, overall): the match model's squad feature
+       (build_features.py uses a player's rating from earlier seasons only)
 
 Abilities and why (study 2026-11-09, "moved" = correlation with last season for players who changed teams, the
 strictest test that a number follows the player rather than his team):
@@ -44,6 +46,7 @@ from collections import defaultdict
 from pathlib import Path
 
 CURATED = os.environ.get("CURATED_PATH", "hdfs://namenode:9000/curated/kovo")
+MARTS = os.environ.get("MARTS_PATH", "hdfs://namenode:9000/marts/kovo")
 MERGE_SQL = Path(__file__).resolve().parent / "sql" / "merge_player_ratings.sql"
 FINISHED = ["FINISHED", "CONFIRMED"]
 REGULAR = "201"
@@ -426,6 +429,8 @@ def main():
                                                "qualified_seasons int, sets int, first_season string, "
                                                "last_season string, best_season string, best_overall int, "
                                                "qualified boolean, overall int, abilities string, extra string")
+    df.select("season_code", "player_code", "team_code", "gender", "position", "sets", "qualified", "overall") \
+        .write.mode("overwrite").parquet(f"{MARTS}/player_rating")
     tables = {"player_rating": df, "player_rating_career": career_df}
     for row in load_and_merge(spark, tables, MERGE_SQL, "merge_player_ratings"):
         print("merge:", *row)

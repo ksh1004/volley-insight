@@ -292,3 +292,34 @@ def rating_board(season, gender, position, include_all=False):
     abilities = [{"key": a["key"], "label": a["label"], "weight": a["weight"]} for a in first.abilities] if first else []
     return {"position": position, "position_name": POSITION_NAMES.get(position, position), "abilities": abilities,
             "rows": rows}
+
+
+def career_board(gender, position, include_all=False):
+    """All-time board: career cards of one gender and position ranked by overall (rank only among careers with 3+
+    qualified seasons), with the team of each player's latest season at the position."""
+    qs = (PlayerCareerRating.objects.filter(gender=gender, position=position)
+          .select_related("player", "first_season", "last_season", "best_season")
+          .order_by(F("overall").desc(nulls_last=True), "player__name"))
+    if not include_all:
+        qs = qs.filter(qualified=True)
+    cards = list(qs)
+    teams = {}
+    for r in (PlayerRating.objects.filter(player_id__in=[c.player_id for c in cards], position=position)
+              .select_related("team").order_by("player_id", "-season__code")):
+        teams.setdefault(r.player_id, {"code": r.team.code, "name": r.team.name})
+    rows, rank, prev_overall, n = [], None, None, 0
+    for c in cards:
+        ranked = c.qualified and c.overall is not None
+        if ranked:
+            n += 1
+            if c.overall != prev_overall:
+                rank, prev_overall = n, c.overall
+        rows.append({"rank": rank if ranked else None, "player": {"code": c.player.code, "name": c.player.name},
+                     "team": teams.get(c.player_id), "overall": c.overall, "sets": c.sets, "seasons": c.seasons,
+                     "qualified_seasons": c.qualified_seasons, "qualified": c.qualified, "provisional": not c.qualified,
+                     "first": _season(c.first_season), "last": _season(c.last_season),
+                     "best": {"season": _season(c.best_season), "overall": c.best_overall} if c.best_season else None,
+                     "scores": {a["key"]: a.get("score") for a in c.abilities}})
+    abilities = [{"key": a["key"], "label": a["label"], "weight": a["weight"]} for a in cards[0].abilities] if cards else []
+    return {"position": position, "position_name": POSITION_NAMES.get(position, position), "abilities": abilities,
+            "rows": rows}

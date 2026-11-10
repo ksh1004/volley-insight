@@ -72,7 +72,8 @@ watch(season, (v) => { if (data.value && v !== data.value.season.code) load() })
 
       <section v-if="data.ratings" class="card">
         <h2>능력치 카드 <span class="muted small">정규리그 · 같은 성별·포지션 비교</span></h2>
-        <PlayerRatingCard :ratings="data.ratings" :season="data.season.code" :gender="data.player.gender" />
+        <PlayerRatingCard :ratings="data.ratings" :season="data.season.code" :gender="data.player.gender"
+                          :prefer-career="route.query.card === 'career'" />
       </section>
 
       <div :class="{ 'grid-2': data.profile && data.form }">
