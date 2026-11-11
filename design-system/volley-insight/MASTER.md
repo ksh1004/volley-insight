@@ -8,7 +8,7 @@
 | 제품 유형 | 스포츠 기록·분석 (Sports Team/Club → Performance Analytics 대시보드) | `--domain product "sports scores league results"` |
 | 스타일 | Data-Dense Dashboard: 표·KPI 카드·차트, 여백 최소, 격자 배치, 데이터 최대 노출 | `--design-system "sports statistics analytics dashboard" --density 8` |
 | 패턴 | 랜딩 패턴은 쓰지 않는다. 검색된 Enterprise Gateway·Hero-Centric은 마케팅용이라 제외 | 검증 결과 부적합 |
-| 글꼴 | Noto Sans KR (300/400/500/700). 숫자는 `font-variant-numeric: tabular-nums` | `--domain typography "korean cjk sans dashboard"` → Korean Modern |
+| 글꼴 | Pretendard Variable(가변 글꼴, OFL, jsDelivr 동적 서브셋). 대체: Noto Sans KR → 시스템 글꼴. 제목 800/700, 본문 400/500. 숫자는 `font-variant-numeric: tabular-nums` (2026-11-11 Noto Sans KR에서 교체) | `--domain typography "korean cjk sans dashboard"` → Korean Modern |
 | 밀도 | Dense: 간격 8·12·16·24·32px | density 8 |
 | 모션 | 데이터가 바뀐 것을 보여줄 때만 움직인다(아래 "모션" 절). 라이브러리 없이 자체 도구(`frontend/src/motion`)로 구현, `prefers-reduced-motion`이면 최종 상태만 | motion 3 → 5 (2026-11-06) |
 
@@ -17,11 +17,12 @@
 | 토큰 | 값 | 쓰임 |
 |---|---|---|
 | `--color-primary` | `#1E40AF` | 링크, 선택된 탭, 홈팀, 승리 강조 |
-| `--color-accent` | `#B45309` | 원정팀, 강조(오늘 경기). 흰 배경 대비 4.5:1 이상이 되도록 `#D97706`을 한 단계 어둡게 |
-| `--color-background` | `#F8FAFC` | 페이지 배경 |
+| `--color-accent` | `#C2410C` | 원정팀, 강조(오늘 경기). 흰 배경 대비 5.2:1 |
+| `--color-background` | `#F4F6FA` | 페이지 배경 |
 | `--color-card` | `#FFFFFF` | 카드 |
 | `--color-foreground` | `#0F172A` | 본문 |
-| `--color-heading` | `#1E3A8A` | 제목, 핵심 숫자 |
+| `--color-heading` | `#0F1F47` | 제목, 핵심 숫자(짙은 남색 잉크). 파랑(primary)은 링크·선택·홈팀에만 써서 누를 수 있는 것이 눈에 띄게 한다 |
+| `--color-header` | `#0F1F47` | 머리글 바탕(흰 글자). 가장 짙은 색이 차지하는 유일한 넓은 영역 |
 | `--color-muted-foreground` | `#475569` | 보조 글자 (흰 배경 대비 7.5:1) |
 | `--color-border` | `#E2E8F0` / 강조 `#DBEAFE` | 구분선 / 선택·호버 테두리 |
 | `--color-good` / `--color-bad` | `#15803D` / `#B91C1C` | 평균 대비 좋음/나쁨. 반드시 +/− 부호와 함께 쓴다 |
@@ -35,6 +36,10 @@
 - **표:** 넓은 표는 표 안에서만 가로 스크롤(`.table-wrap`), 첫 열 고정. 정렬 가능한 표는 `aria-sort`.
 - **차트:** 색만으로 구분하지 않는다(값·부호·라벨을 함께). 점수 흐름은 리드 변경 횟수·최다 연속 득점을 문장으로도 보여준다.
 - **아이콘:** 이모지를 쓰지 않는다. 필요하면 SVG.
+- **구역과 카드(2026-11-11):** 카드 안에 카드를 넣지 않는다. 경기 카드처럼 카드 목록이 들어가는 구역은 테두리 없는 `.section` + `.section-head`를 쓰고, 표·글 목록은 `.card`를 쓴다.
+- **색 띠 금지:** 카드·표 행 옆의 굵은 색 테두리(`border-left`)를 쓰지 않는다. 순위표의 포스트시즌 구간은 순위 숫자 앞의 점(`tr.po`/`tr.semi` + `td.rank`)과 표 아래 범례(`.zone-legend`)로 알린다.
+- **반응형 기준:** 머리글은 900px 이하에서 두 줄(로고+메뉴 / 검색+로그인), 메뉴는 줄바꿈 없이 안에서 옆으로 민다. 두 칸 배치(`.grid-2`)는 760px 이하에서 한 칸. 경기 카드 격자는 `minmax(min(100%, 300px), 1fr)`로 1~3열.
+- **브라우저 기본 표면:** 글자 선택 색, 스크롤바, 입력 커서도 토큰 색을 따른다(`App.vue`).
 - **출처:** 모든 화면 하단에 KOVO 출처 (WEB-14).
 
 ## 모션 (2026-11-06, `frontend/src/motion`, 외부 라이브러리 없음)

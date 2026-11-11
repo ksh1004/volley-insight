@@ -83,7 +83,7 @@ watch(category, loadRanking)
           </TransitionGroup>
         </table>
       </div>
-      <p class="legend small muted"><span class="key po" /> 포스트시즌권(1~3위) <span class="key semi" /> 준플레이오프권(4위가 3위와 승점 3점 이내)</p>
+      <p class="zone-legend small muted"><span class="key po" /> 포스트시즌권(1~3위) <span class="key semi" /> 준플레이오프권(4위가 3위와 승점 3점 이내)</p>
       <p class="small muted">순위 기준: {{ standings.rule }}. 승자승은 반영하지 않았습니다.</p>
     </AsyncState>
   </section>
@@ -123,11 +123,4 @@ watch(category, loadRanking)
 <style scoped>
 .form { display: inline-flex; gap: 3px; }
 .busy { opacity: .55; transition: opacity var(--dur-fast) linear; }
-.rank { font-weight: 700; border-left: 3px solid transparent; }
-tr.po .rank { border-left-color: var(--color-primary); }
-tr.semi .rank { border-left-color: var(--color-accent); }
-.legend { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0 0; }
-.key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
-.key.po { background: var(--color-primary); }
-.key.semi { background: var(--color-accent); margin-left: 8px; }
 </style>

@@ -66,12 +66,13 @@ const NAV = [
 :root {
   --color-primary: #1e40af;
   --color-primary-soft: #eff4ff;
-  --color-accent: #b45309;
-  --color-accent-soft: #fff7ed;
-  --color-background: #f8fafc;
+  --color-accent: #c2410c;
+  --color-accent-soft: #fff4ec;
+  --color-background: #f4f6fa;
   --color-card: #ffffff;
   --color-foreground: #0f172a;
-  --color-heading: #1e3a8a;
+  --color-heading: #0f1f47; /* 제목·핵심 숫자는 짙은 남색 잉크. 파랑(primary)은 링크·선택·홈팀에만 쓴다 */
+  --color-header: #0f1f47;  /* 머리글 바탕 */
   --color-muted-foreground: #475569;
   --color-muted: #f1f5f9;
   --color-border: #e2e8f0;
@@ -88,16 +89,22 @@ const NAV = [
   --radius: 10px;
   --shadow-card: 0 1px 2px rgb(15 23 42 / .04);
   --ease: cubic-bezier(.2, .7, .2, 1);
-  --font-sans: 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
+  --font-sans: 'Pretendard Variable', Pretendard, 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
 }
 * { box-sizing: border-box; }
 body { margin: 0; font-family: var(--font-sans); color: var(--color-foreground); background: var(--color-background);
        font-size: 15px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+/* 브라우저가 그리는 부분도 같은 팔레트로: 글자 선택 색, 스크롤바, 입력 커서 */
+::selection { background: var(--color-border-strong); color: var(--color-heading); }
+html { scrollbar-color: #cbd5e1 transparent; }
+input, textarea { caret-color: var(--color-primary); }
+h1, h2 { text-wrap: balance; }
+p { text-wrap: pretty; }
 a { color: var(--color-primary); text-decoration: none; }
 a:hover { text-decoration: underline; text-underline-offset: 3px; }
-h1 { font-size: 1.5rem; margin: 0 0 var(--space-4); color: var(--color-heading); letter-spacing: -.01em; }
-h2 { font-size: 1.05rem; margin: 0 0 var(--space-3); color: var(--color-heading); }
-.wrap { max-width: 1120px; margin: 0 auto; padding: 0 var(--space-4); }
+h1 { font-size: 1.6rem; font-weight: 800; margin: 0 0 var(--space-4); color: var(--color-heading); letter-spacing: -.02em; }
+h2 { font-size: 1.05rem; font-weight: 700; margin: 0 0 var(--space-3); color: var(--color-heading); letter-spacing: -.01em; }
+.wrap { max-width: 1200px; margin: 0 auto; padding: 0 clamp(12px, 4vw, 24px); }
 
 /* keyboard focus is always visible */
 :focus-visible { outline: 2px solid var(--color-ring); outline-offset: 2px; border-radius: 4px; }
@@ -105,35 +112,46 @@ h2 { font-size: 1.05rem; margin: 0 0 var(--space-3); color: var(--color-heading)
              padding: var(--space-2) var(--space-3); border-radius: 6px; }
 .skip-link:focus { left: 8px; }
 
-.app-header { background: var(--color-card); border-bottom: 1px solid var(--color-border); position: sticky; top: 0; z-index: 10; }
+/* 머리글: 짙은 남색 바탕에 흰 글자. 안쪽 검색창은 --search-* 변수로 어두운 바탕용 색을 받는다(SearchBox.vue) */
+.app-header { background: var(--color-header); color: #fff; position: sticky; top: 0; z-index: 10;
+              --search-bg: rgb(255 255 255 / .1); --search-border: rgb(255 255 255 / .16); --search-fg: #fff;
+              --search-muted: rgb(255 255 255 / .72); }
+.app-header :focus-visible { outline-color: #fff; }
 .header-row { display: flex; align-items: center; gap: var(--space-5); height: 56px; }
-.brand { display: flex; align-items: center; gap: var(--space-2); font-weight: 700; font-size: 1.02rem; color: var(--color-heading); }
+.brand { display: flex; align-items: center; gap: var(--space-2); font-weight: 800; font-size: 1.05rem; letter-spacing: -.02em; color: #fff; }
 .brand:hover { text-decoration: none; }
-.logo { width: 24px; height: 24px; fill: var(--color-primary); stroke: #fff; stroke-width: 1.6; }
+.logo { width: 24px; height: 24px; fill: #fff; stroke: var(--color-header); stroke-width: 1.6; }
 .nav { display: flex; gap: var(--space-1); height: 100%; }
-.nav-link { display: flex; align-items: center; padding: 0 var(--space-3); color: var(--color-muted-foreground); font-weight: 500;
+.nav-link { display: flex; align-items: center; flex: none; padding: 0 var(--space-3); white-space: nowrap;
+            color: rgb(255 255 255 / .74); font-weight: 500;
             border-bottom: 2px solid transparent; transition: color .15s var(--ease), border-color .15s var(--ease); }
-.nav-link:hover { color: var(--color-foreground); text-decoration: none; }
-.nav-link.is-active { color: var(--color-primary); border-bottom-color: var(--color-primary); font-weight: 700; }
+.nav-link:hover { color: #fff; text-decoration: none; }
+.nav-link.is-active { color: #fff; border-bottom-color: #fff; font-weight: 700; }
+.app-header .nav > .glider { background: #fff; }
 .nav.glider-ready .nav-link.is-active { border-bottom-color: transparent; } /* the sliding underline (v-glider) draws it */
 .account { display: flex; align-items: center; gap: 6px; flex-shrink: 0; min-height: 36px; padding: 0 12px; border-radius: 999px;
-           border: 1px solid var(--color-border); color: var(--color-foreground); font-size: .88rem; font-weight: 600; white-space: nowrap; }
-.account:hover { border-color: var(--color-primary); color: var(--color-primary); text-decoration: none; }
-.account.is-active { border-color: var(--color-primary); color: var(--color-primary); background: var(--color-primary-soft); }
+           border: 1px solid rgb(255 255 255 / .3); color: #fff; font-size: .88rem; font-weight: 600; white-space: nowrap;
+           transition: background-color .15s var(--ease), border-color .15s var(--ease); }
+.account:hover { border-color: #fff; background: rgb(255 255 255 / .1); text-decoration: none; }
+.account.is-active { border-color: #fff; background: rgb(255 255 255 / .16); }
 .account svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 .account .who { max-width: 8em; overflow: hidden; text-overflow: ellipsis; }
 .app-main { padding-top: var(--space-5); padding-bottom: 48px; min-height: calc(100vh - 140px); outline: none; }
 .app-footer { border-top: 1px solid var(--color-border); background: var(--color-card); color: var(--color-muted-foreground); font-size: .85rem; padding: var(--space-4) 0; }
-@media (max-width: 760px) {
-  /* search moves to its own row under the menu */
+@media (max-width: 900px) {
+  /* 태블릿·휴대폰: 첫 줄은 로고 + 메뉴, 검색창과 로그인은 둘째 줄로 내려간다.
+     메뉴가 줄 폭보다 길면 줄바꿈 대신 메뉴 안에서만 옆으로 민다 */
   .header-row { flex-wrap: wrap; height: auto; row-gap: 0; padding-bottom: var(--space-2); }
   .header-row > .brand, .header-row > .nav { height: 48px; }
+  .nav { flex: 1 1 calc(100% - 200px); min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .nav::-webkit-scrollbar { display: none; }
   .account { min-height: 40px; }
   .account .who { max-width: 5em; }
 }
 @media (max-width: 560px) {
   .header-row { gap: var(--space-2); }
   .brand span { display: none; }
+  .nav { flex-basis: calc(100% - 50px); } /* 로고 글자가 숨겨져 메뉴가 쓸 자리가 늘어난다 */
   .nav-link { padding: 0 var(--space-2); }
 }
 
@@ -142,6 +160,11 @@ h2 { font-size: 1.05rem; margin: 0 0 var(--space-3); color: var(--color-heading)
         padding: var(--space-4); margin-bottom: var(--space-4); box-shadow: var(--shadow-card); }
 .card-head { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-3); }
 .card-head h2 { margin: 0; }
+/* 카드 테두리 없는 구역: 안에 카드 목록(경기 카드 등)이 들어갈 때 쓴다(카드 안에 카드를 넣지 않기 위해) */
+.section { margin-bottom: var(--space-5); }
+.section-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-3); flex-wrap: wrap;
+                margin-bottom: var(--space-3); }
+.section-head h2 { margin: 0; font-size: 1.15rem; }
 .muted { color: var(--color-muted-foreground); }
 .small { font-size: .85rem; }
 .num { font-variant-numeric: tabular-nums; }
@@ -164,6 +187,15 @@ table.data th.sortable { cursor: pointer; user-select: none; }
 table.data th.sortable button { all: unset; cursor: pointer; }
 table.data th.sortable button:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 2px; }
 table.data th[aria-sort] { color: var(--color-primary); font-weight: 700; }
+/* 순위표의 포스트시즌 구간 표시: 순위 숫자 앞의 점(po 파랑 = 포스트시즌권, semi 주황 = 준플레이오프권). 뜻은 표 아래 범례가 설명한다 */
+table.data td.rank { font-weight: 700; }
+table.data td.rank::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%;
+                             vertical-align: 2px; background: transparent; }
+table.data tr.po td.rank::before { background: var(--color-primary); }
+table.data tr.semi td.rank::before { background: var(--color-accent); }
+.zone-legend { display: flex; align-items: center; gap: 4px 6px; flex-wrap: wrap; margin: var(--space-2) 0 0; }
+.zone-legend .key { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--color-primary); }
+.zone-legend .key.semi { background: var(--color-accent); margin-left: var(--space-2); }
 
 .tabs { display: flex; gap: var(--space-1); flex-wrap: wrap; margin-bottom: var(--space-3); }
 .tab { border: 1px solid var(--color-border); background: var(--color-card); color: var(--color-muted-foreground); padding: 6px 12px;

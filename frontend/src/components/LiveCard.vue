@@ -39,7 +39,7 @@ const label = computed(() => {
 
 <style scoped>
 .live-card { display: block; padding: 10px 14px; border: 1px solid var(--color-accent); border-radius: var(--radius);
-             background: var(--color-card); color: var(--color-foreground);
+             background: var(--color-card); color: var(--color-foreground); box-shadow: var(--shadow-card);
              transition: box-shadow .15s var(--ease), transform var(--dur-fast) var(--ease-out); }
 .live-card.replay { border-color: var(--color-border); }
 .live-card:hover { text-decoration: none; box-shadow: 0 2px 8px rgb(30 64 175 / .1); }

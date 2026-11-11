@@ -77,9 +77,13 @@ onMounted(async () => {
 </script>
 
 <template>
+  <h1 class="sr-only">홈</h1>
   <AsyncState :loading="state.loading" :error="state.error">
-    <section v-if="live.length" v-reveal class="card" aria-labelledby="live-title">
-      <div class="card-head">
+    <!-- 넓은 화면: 왼쪽에 경기(진행 중·오늘·최근), 오른쪽에 남녀부 순위. 좁아지면 순위가 경기 아래로 내려간다 -->
+    <div class="home-layout">
+    <div class="home-main">
+    <section v-if="live.length" v-reveal class="section" aria-labelledby="live-title">
+      <div class="section-head">
         <h2 id="live-title">진행 중 경기</h2>
         <span class="muted small">20초마다 갱신 · 누르면 실시간 화면</span>
       </div>
@@ -90,20 +94,20 @@ onMounted(async () => {
 
     <FavoriteFeed />
 
-    <section v-reveal class="card">
-      <div class="card-head">
+    <section v-reveal class="section">
+      <div class="section-head">
         <h2>{{ today.length ? '오늘 경기' : '다음 경기' }}</h2>
         <span class="muted small">{{ fmtFullDate(new Date().toISOString()) }}</span>
       </div>
-      <div class="match-grid" v-if="today.length || upcoming.length">
+      <div class="match-grid featured" v-if="today.length || upcoming.length">
         <MatchCard v-for="(m, i) in favFirst(today.length ? today : upcoming)" :key="m.key" v-reveal="i" :match="m" :show-date="!today.length"
                    :favorite="isFav(m)" />
       </div>
       <p v-else class="empty">예정된 경기가 없습니다.</p>
     </section>
 
-    <section v-reveal class="card">
-      <div class="card-head">
+    <section v-reveal class="section">
+      <div class="section-head">
         <h2>최근 결과</h2>
         <RouterLink to="/schedule" class="small">전체 일정 →</RouterLink>
       </div>
@@ -112,7 +116,8 @@ onMounted(async () => {
       </div>
     </section>
 
-    <div class="grid-2">
+    </div>
+    <aside class="home-side" aria-label="정규리그 순위">
       <section v-for="(g, i) in ['M', 'F']" :key="g" v-reveal="i" class="card">
         <div class="card-head">
           <h2>{{ GENDERS[g] }} 순위</h2>
@@ -131,11 +136,17 @@ onMounted(async () => {
             </tbody>
           </table>
         </div>
-        <RouterLink :to="{ path: '/standings', query: { gender: g } }" class="small more">순위 자세히 →</RouterLink>
+        <div class="table-foot">
+          <p v-if="Object.keys(postseasonZone(standings[g]?.rows)).length" class="zone-legend small muted">
+            <span class="key po" /> 포스트시즌권 <span class="key semi" /> 준플레이오프권
+          </p>
+          <RouterLink :to="{ path: '/standings', query: { gender: g } }" class="small more">순위 자세히 →</RouterLink>
+        </div>
       </section>
+    </aside>
     </div>
 
-    <section v-reveal class="card">
+    <section v-reveal class="card home-articles">
       <div class="card-head">
         <h2>최신 기사</h2>
         <RouterLink to="/news" class="small">기사 더 보기 →</RouterLink>
@@ -149,10 +160,25 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.match-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
-.more { display: inline-block; margin-top: 8px; }
-.rank { font-weight: 700; border-left: 3px solid transparent; }
-tr.po .rank { border-left-color: var(--color-primary); }
-tr.semi .rank { border-left-color: var(--color-accent); }
+/* 경기 카드 격자: 폭에 따라 1~3열(휴대폰 1열, 태블릿 2열, 넓은 화면 3열) */
+.match-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+/* 오늘(다음) 경기는 수가 적으므로 빈칸을 남기지 않고 폭을 나눠 쓴다. 한 경기뿐일 때 지나치게 넓어지지 않게 상한을 둔다 */
+.match-grid.featured { grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); }
+.match-grid.featured > * { max-width: 540px; }
+.home-layout { display: grid; gap: var(--space-4) var(--space-5); margin-bottom: var(--space-4); }
+.home-main > :last-child { margin-bottom: 0; }
+.home-side { display: grid; gap: var(--space-4); grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); align-content: start; }
+.home-side .card { margin: 0; }
+@media (min-width: 1040px) {
+  .home-layout { grid-template-columns: minmax(0, 1fr) 348px; align-items: start; }
+}
+.table-foot { display: flex; justify-content: space-between; align-items: center; gap: 4px 12px; flex-wrap: wrap; margin-top: 8px; }
+.table-foot .zone-legend { margin: 0; }
+.table-foot .more { margin-left: auto; }
+/* 넓은 화면에서는 기사를 두 줄로 나눠 한 줄이 너무 길어지지 않게 한다 */
+@media (min-width: 900px) {
+  .home-articles :deep(.articles) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--space-6); }
+  .home-articles :deep(.article:nth-last-child(2):nth-child(odd)) { border-bottom: 0; }
+}
 tr.fav td { background: var(--color-accent-soft); font-weight: 700; }
 </style>

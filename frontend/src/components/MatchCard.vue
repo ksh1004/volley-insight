@@ -60,10 +60,9 @@ const label = computed(() => {
 
 <style scoped>
 .match-card { display: block; padding: 10px 14px 12px; border: 1px solid var(--color-border); border-radius: var(--radius);
-              background: var(--color-card); color: var(--color-foreground);
+              background: var(--color-card); color: var(--color-foreground); box-shadow: var(--shadow-card);
               transition: border-color .15s var(--ease), box-shadow .15s var(--ease), transform var(--dur-fast) var(--ease-out); }
 .match-card:hover { border-color: var(--color-primary); box-shadow: 0 2px 8px rgb(30 64 175 / .08); text-decoration: none; }
-.match-card.post { border-left: 3px solid var(--color-accent); }
 .meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: .78rem; color: var(--color-muted-foreground); margin-bottom: 6px; }
 .when { display: inline-flex; align-items: center; gap: 4px; color: var(--color-foreground); font-weight: 500; font-variant-numeric: tabular-nums; }
 .star { width: 14px; height: 14px; fill: var(--color-accent); }

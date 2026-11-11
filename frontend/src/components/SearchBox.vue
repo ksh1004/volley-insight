@@ -115,13 +115,17 @@ onBeforeUnmount(() => { clearTimeout(timer); controller?.abort() })
 <style scoped>
 .search { position: relative; margin-left: auto; width: min(280px, 32vw); }
 .icon { position: absolute; left: 10px; top: 50%; width: 16px; height: 16px; transform: translateY(-50%);
-        fill: none; stroke: var(--color-muted-foreground); stroke-width: 1.8; pointer-events: none; }
+        fill: none; stroke: var(--search-muted, var(--color-muted-foreground)); stroke-width: 1.8; pointer-events: none; }
+.search:focus-within .icon { stroke: var(--color-muted-foreground); }
 input { width: 100%; font: inherit; font-size: .9rem; padding: 7px 10px 7px 32px; min-height: 36px; border-radius: 999px;
-        border: 1px solid var(--color-border); background: var(--color-muted); color: var(--color-foreground);
-        transition: border-color .15s var(--ease), background-color .15s var(--ease); }
-input:hover { border-color: var(--color-primary); }
-input:focus { background: var(--color-card); border-color: var(--color-primary); }
-input::placeholder { color: var(--color-muted-foreground); }
+        border: 1px solid var(--search-border, var(--color-border)); background: var(--search-bg, var(--color-muted));
+        color: var(--search-fg, var(--color-foreground));
+        transition: border-color .15s var(--ease), background-color .15s var(--ease), color .15s var(--ease); }
+/* 색은 --search-* 변수로 받는다: 어두운 머리글 안에서는 App.vue가 밝은 글자색을 넘겨주고, 입력을 시작하면(포커스) 흰 바탕으로 바뀐다 */
+input:hover { border-color: var(--search-fg, var(--color-primary)); }
+input:focus { background: var(--color-card); border-color: var(--color-card); color: var(--color-foreground); }
+input::placeholder { color: var(--search-muted, var(--color-muted-foreground)); }
+input:focus::placeholder { color: var(--color-muted-foreground); }
 .list { position: absolute; top: calc(100% + 6px); left: 0; right: 0; min-width: 260px; margin: 0; padding: 4px; list-style: none;
         background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius);
         box-shadow: 0 8px 24px rgb(15 23 42 / .12); z-index: 20; }
@@ -136,5 +140,5 @@ input::placeholder { color: var(--color-muted-foreground); }
 .all:hover { background: var(--color-primary-soft); }
 @media (pointer: coarse) { input { min-height: 44px; } .option { min-height: 44px; } }
 /* own row under the menu, sharing it with the account link (App.vue) */
-@media (max-width: 760px) { .search { width: auto; flex: 1 1 calc(100% - 160px); margin-left: 0; } }
+@media (max-width: 900px) { .search { width: auto; flex: 1 1 calc(100% - 160px); margin-left: 0; } }
 </style>
