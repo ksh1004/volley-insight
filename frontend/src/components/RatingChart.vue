@@ -4,7 +4,7 @@
 // 모양(속이 빈 점)으로도 구별한다.
 // 상호작용(ui-ux-pro-max "시간에 따른 추세": 확대·되돌리기 버튼): 차트를 끌어 범위를 고르면 그 경기들로 확대,
 // +/- 버튼(또는 키)으로 가리킨 경기 중심 확대·축소, '전체'로 시즌 전체 복귀.
-// 시즌 초반(10경기 미만)에는 지난 시즌 마지막 경기들을 흐리게 앞에 붙이고, 시즌 사이 점수 조정(1500 쪽으로 3분의 1)을 점선으로 잇는다.
+// 시즌 초반(10경기 미만)에는 지난 시즌 마지막 경기들을 흐리게 앞에 붙이고, 시즌 사이 점수 조정(1500 쪽으로 절반)을 점선으로 잇는다.
 // 모션: 처음 보일 때 선이 그려지고, 확대할 때 가로·세로 축이 튀지 않고 미끄러지듯 바뀐다.
 import { computed, ref, useId } from 'vue'
 import { DURATION, ease, useInView, useTween } from '@/motion/core'
@@ -30,7 +30,7 @@ const prev = computed(() => (cur.value.length && props.previous?.history?.length
 const offset = computed(() => prev.value.length) // 이번 시즌 첫 경기의 인덱스(앞에 지난 시즌 점들이 있으므로)
 const pts = computed(() => [...prev.value.map((p) => ({ ...p, prev: true })), ...cur.value])
 const n = computed(() => pts.value.length)
-// 이번 시즌 첫 경기 전 점수(지난 시즌 점수를 1500 쪽으로 3분의 1 되돌린 값) = 첫 경기 점수 - 첫 경기 변화량
+// 이번 시즌 첫 경기 전 점수(지난 시즌 점수를 1500 쪽으로 절반 되돌린 값) = 첫 경기 점수 - 첫 경기 변화량
 const startRating = computed(() => (cur.value.length ? cur.value[0].rating - cur.value[0].change : null))
 
 // ---- 보이는 범위 [from, to](경기 인덱스). 확대할 때 부드럽게 바뀐다
@@ -213,7 +213,7 @@ const sign = (v) => (v > 0 ? `+${v.toFixed(1)}` : v.toFixed(1))
       <p class="muted note">경기 결과로 계산한 Elo 점수예요. 강한 팀을 이기면 많이 오르고, 약한 팀에 지면 많이 내려가요. 속이 빈 점은 포스트시즌 경기.
         <span class="pointer-only">차트를 옆으로 끌면 그 구간을 확대하고, 두 번 누르면 전체로 돌아가요.</span></p>
       <p v-if="offset" class="muted note">시즌 초반이라 지난 시즌 마지막 {{ offset }}경기를 흐린 점선으로 함께 보여 줘요.
-        새 시즌 첫 경기 전에는 점수를 리그 평균(1500) 쪽으로 1/3 되돌려요(선수단이 바뀌기 때문): {{ fmt(prev[offset - 1].rating) }} → {{ fmt(startRating) }}.</p>
+        새 시즌 첫 경기 전에는 점수를 리그 평균(1500) 쪽으로 절반 되돌려요(선수단이 바뀌기 때문): {{ fmt(prev[offset - 1].rating) }} → {{ fmt(startRating) }}.</p>
     </figcaption>
   </figure>
   <p v-else class="empty">이 시즌 전력 지수가 아직 없습니다.</p>

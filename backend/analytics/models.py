@@ -17,7 +17,7 @@ from matches.models import Match
 
 
 class TeamRating(PipelineModel):
-    """경기 하나를 마친 뒤의 팀 Elo. 시즌 첫 행은 지난 시즌 점수를 1500 쪽으로 3분의 1 되돌린 값에서 시작한다
+    """경기 하나를 마친 뒤의 팀 Elo. 시즌 첫 행은 지난 시즌 점수를 1500 쪽으로 절반 되돌린 값에서 시작한다
     (시즌 사이에 선수단이 바뀌므로)."""
 
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name="ratings")
