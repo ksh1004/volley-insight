@@ -80,5 +80,6 @@ def test_client_error_is_not_retried():
 def test_body_level_error_status_raises():
     """HTTP 200이어도 본문의 result.status가 200이 아니면 실패로 본다."""
     client, _, _ = make([FakeResponse(200, {"result": {"status": 400, "message": "bad"}, "payload": None})])
-    with pytest.raises(KovoApiError, match="result.status=400"):
+    with pytest.raises(KovoApiError, match="result.status=400") as err:
         client.season_list()
+    assert err.value.status == 400  # 수집기가 "없음(404)"과 다른 실패를 구별할 때 쓴다

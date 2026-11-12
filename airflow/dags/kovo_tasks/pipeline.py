@@ -159,6 +159,18 @@ def collect_games(games, client=None, publisher=None):
     return batches
 
 
+def collect_honors(codes, client=None, publisher=None):
+    """선수들의 수상·주요 기록을 발행하고 (배치, KOVO에 없는 선수 코드들)을 돌려준다. 선수 한 명 = 요청 1번."""
+    from collectors.kovo_client import KovoClient
+    from collectors.kovo_collectors import HonorCollector
+    from collectors.publisher import KafkaPublisher
+
+    col = HonorCollector(client or KovoClient(), publisher or KafkaPublisher())
+    started = now_kst()
+    n = col.run(codes=codes)
+    return batch_of(col, n, started), col.skipped
+
+
 def collect_news(client=None, publisher=None):
     """배구 기사 메타데이터를 발행한다(RSS + 키가 있으면 네이버 API). (배치, URL들, 실패한 피드, URL별 제목)을 돌려준다."""
     from collectors.news import NewsCollector, NewsHttp
@@ -240,6 +252,17 @@ def confirmed_game_nos(season: str) -> set:
     with db_connect() as conn, conn.cursor() as cur:
         cur.execute(f"SELECT m.game_no {MATCHES} WHERE s.code = %s AND m.status = 'CONFIRMED'", (season,))
         return {r[0] for r in cur.fetchall()}
+
+
+HONOR_RECENT_DAYS = 400  # "현역"으로 볼 기간: 이 안에 경기 기록이 있는 선수(지난 시즌 선수까지 들어간다)
+
+
+def honor_targets(everyone: bool) -> list:
+    """수상 기록을 수집할 선수 코드들. everyone이면 DB의 모든 선수, 아니면 최근 HONOR_RECENT_DAYS일 안에 뛴 선수."""
+    where = "" if everyone else "WHERE last_seen_on >= current_date - %s"
+    with db_connect() as conn, conn.cursor() as cur:
+        cur.execute(f"SELECT code FROM player {where} ORDER BY code", () if everyone else (HONOR_RECENT_DAYS,))
+        return [r[0] for r in cur.fetchall()]
 
 
 def games_to_watch(now: datetime) -> dict:
@@ -420,6 +443,11 @@ def run_player_types():
 def run_player_ratings():
     """player_ratings.py 제출: 선수 카드의 포지션별 능력치(능력치마다 1~99), 전체 교체."""
     run_spark_job("player_ratings.py")
+
+
+def run_curate_honors():
+    """curate_honors.py 제출: 선수별 수상·주요 기록(COL-04), 전체 교체."""
+    run_spark_job("curate_honors.py")
 
 
 # ---------------------------------------------------------------- Spark

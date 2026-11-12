@@ -21,12 +21,12 @@ const label = computed(() => {
 </script>
 
 <template>
-  <RouterLink :to="`/matches/${m.key}/live`" class="live-card lift" :class="{ replay: s.mode === 'REPLAY' }" :aria-label="label">
+  <RouterLink :to="`/matches/${m.key}/live`" class="live-card" :class="{ replay: s.mode === 'REPLAY' }" :aria-label="label">
     <div class="meta small">
       <span class="mode" :class="s.mode === 'REPLAY' ? 'replay' : 'live'">
-        <i v-if="s.mode === 'LIVE' && !finished" class="dot" aria-hidden="true" />{{ LIVE_MODES[s.mode] }}
+        {{ LIVE_MODES[s.mode] }}
       </span>
-      <span class="muted">{{ GENDERS[m.gender] }} · {{ status }}</span>
+      <span class="where"><span>{{ GENDERS[m.gender] }}</span><span>{{ status }}</span></span>
     </div>
     <div class="row">
       <span class="team home"><i v-if="serving(s.home)" class="serve" title="서브" />{{ m.home.name }}</span>
@@ -38,25 +38,26 @@ const label = computed(() => {
 </template>
 
 <style scoped>
-.live-card { display: block; padding: 10px 14px; border: 1px solid var(--color-accent); border-radius: var(--radius);
-             background: var(--color-card); color: var(--color-foreground); box-shadow: var(--shadow-card);
-             transition: box-shadow .15s var(--ease), transform var(--dur-fast) var(--ease-out); }
-.live-card.replay { border-color: var(--color-border); }
-.live-card:hover { text-decoration: none; box-shadow: 0 2px 8px rgb(30 64 175 / .1); }
-.meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.mode { display: inline-flex; align-items: center; gap: 5px; font-weight: 700; border-radius: 999px; padding: 0 8px; }
-.mode.live { color: var(--color-accent); background: var(--color-accent-soft); }
-.mode.replay { color: var(--color-muted-foreground); background: var(--color-muted); }
-.dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 1.6s ease-in-out infinite; }
-@keyframes pulse { 50% { opacity: .35; } }
-@media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
-.row { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; font-weight: 600; }
-.team { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 5px; }
-.team.home { justify-content: flex-end; color: var(--color-home); }
-.team.away { color: var(--color-away); }
-.sets { font-size: 1.2rem; font-weight: 800; font-variant-numeric: tabular-nums; display: flex; gap: 4px; }
-.pts { text-align: center; font-size: .9rem; font-variant-numeric: tabular-nums; color: var(--color-muted-foreground); }
-.pts .h { color: var(--color-home); font-weight: 700; }
-.pts .a { color: var(--color-away); font-weight: 700; }
-.serve { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--color-foreground); flex: none; }
+/* 진행 중 경기 타일: 전광판처럼 잉크색 바탕에 밝은 글자. 실시간이면 위에 라임색 굵은 줄, 재생이면 회색 줄 */
+.live-card { --on-ink-soft: color-mix(in oklab, var(--color-paper) 72%, transparent);
+             display: block; padding: var(--space-sm) var(--space-md) var(--space-md); background: var(--color-ink); color: var(--color-paper);
+             border-top: 4px solid var(--color-volt); border-radius: 0 0 var(--radius-card) var(--radius-card); text-decoration: none;
+             transition: background-color var(--dur-micro) var(--ease-out); }
+.live-card.replay { border-top-color: var(--color-rule); }
+.live-card:hover, .live-card:active { background: var(--color-ink-2); }
+.live-card:focus-visible { outline-color: var(--color-volt-deep); }
+.meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-xs); font-size: var(--text-xs); }
+.mode { font-weight: 700; border-radius: 2px; padding: 0 var(--space-xs); line-height: 1.7; }
+.mode.live { color: var(--color-volt-ink); background: var(--color-volt); }
+.mode.replay { color: var(--color-paper); background: color-mix(in oklab, var(--color-paper) 18%, transparent); }
+.where { display: flex; gap: var(--space-xs); color: var(--on-ink-soft); }
+.row { display: grid; grid-template-columns: 1fr auto 1fr; gap: var(--space-sm); align-items: center;
+       font-family: var(--font-display); font-weight: var(--display-weight); font-synthesis: none; font-size: var(--text-lg); line-height: 1.15; }
+.team { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: var(--space-2xs); }
+.team.home { justify-content: flex-end; }
+.sets { font-size: var(--text-2xl); line-height: 1; font-variant-numeric: tabular-nums; display: flex; gap: var(--space-2xs); }
+.pts { margin-top: var(--space-2xs); text-align: center; font-family: var(--font-outlier); font-size: var(--text-sm);
+       font-variant-numeric: tabular-nums; color: var(--on-ink-soft); }
+.pts .h, .pts .a { color: var(--color-paper); font-weight: 700; }
+.serve { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--color-paper); flex: none; } /* 서브권 표시 */
 </style>

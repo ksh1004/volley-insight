@@ -61,181 +61,160 @@ const NAV = [
 </template>
 
 <style>
-/* 디자인 토큰(색, 간격, 둥글기 등): design-system/volley-insight/MASTER.md와 같은 값.
-   컴포넌트는 색 값을 직접 쓰지 않고 이 변수(var(--color-...))만 쓴다 → 색을 바꿀 때 여기만 고치면 된다 */
-:root {
-  --color-primary: #1e40af;
-  --color-primary-soft: #eff4ff;
-  --color-accent: #c2410c;
-  --color-accent-soft: #fff4ec;
-  --color-background: #f4f6fa;
-  --color-card: #ffffff;
-  --color-foreground: #0f172a;
-  --color-heading: #0f1f47; /* 제목·핵심 숫자는 짙은 남색 잉크. 파랑(primary)은 링크·선택·홈팀에만 쓴다 */
-  --color-header: #0f1f47;  /* 머리글 바탕 */
-  --color-muted-foreground: #475569;
-  --color-muted: #f1f5f9;
-  --color-border: #e2e8f0;
-  --color-border-soft: #eef2f6;
-  --color-border-strong: #dbeafe;
-  --color-good: #15803d;
-  --color-bad: #b91c1c;
-  --color-home: var(--color-primary);
-  --color-away: var(--color-accent);
-  --color-ring: #1e40af;
-  --color-highlight: #fef3c7; /* search match marks */
+/* Hallmark · shape: app screen · genre: editorial · theme: Sport (deal 1/3, seed live-sports-broadcast-scoreboard-05a1·7a998a35·2026-11-11·r0) · redesign: full
+ * nav: kept top bar, now an ink band with a volt bar under the current page · signature: the fixture board (today's matches as ruled score tiles) · states: loading, empty, error, full
+ * axes: light/display-condensed/chromatic-volt · posture: restrained · contrast: pass · v2.0.0 */
+/* Hallmark · pre-emit critique: P4 H4 E3 S4 R4 V4 · weakest: E, the board carries the first screen so type scale does the work a picture would */
+/* Hallmark · waive 64 · times and figures are set in mono because the theme's material is a results sheet; labels stay in the body face */
+@import url("./tokens.css");
+@import url("./base.css");
 
-  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
-  --radius: 10px;
-  --shadow-card: 0 1px 2px rgb(15 23 42 / .04);
-  --ease: cubic-bezier(.2, .7, .2, 1);
-  --font-sans: 'Pretendard Variable', Pretendard, 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
-}
-* { box-sizing: border-box; }
-body { margin: 0; font-family: var(--font-sans); color: var(--color-foreground); background: var(--color-background);
-       font-size: 15px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
-/* 브라우저가 그리는 부분도 같은 팔레트로: 글자 선택 색, 스크롤바, 입력 커서 */
-::selection { background: var(--color-border-strong); color: var(--color-heading); }
-html { scrollbar-color: #cbd5e1 transparent; }
-input, textarea { caret-color: var(--color-primary); }
-h1, h2 { text-wrap: balance; }
-p { text-wrap: pretty; }
-a { color: var(--color-primary); text-decoration: none; }
-a:hover { text-decoration: underline; text-underline-offset: 3px; }
-h1 { font-size: 1.6rem; font-weight: 800; margin: 0 0 var(--space-4); color: var(--color-heading); letter-spacing: -.02em; }
-h2 { font-size: 1.05rem; font-weight: 700; margin: 0 0 var(--space-3); color: var(--color-heading); letter-spacing: -.01em; }
-.wrap { max-width: 1200px; margin: 0 auto; padding: 0 clamp(12px, 4vw, 24px); }
+/* 전역 스타일: 머리글·바닥글과, 모든 화면이 함께 쓰는 공용 클래스(.card, .section, .tabs, table.data, .btn 등).
+   모습의 기준은 "경기 기록지": 상자 대신 줄(굵은 줄로 열고 닫고, 가는 줄로 행을 나눔), 그림자 없음, 강조는 형광 라임 채움 하나. */
+h1 { margin: 0 0 var(--space-md); }
+h2 { margin: 0 0 var(--space-sm); }
+.wrap { max-width: var(--container); margin: 0 auto; padding: 0 var(--gutter); }
 
-/* keyboard focus is always visible */
-:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 2px; border-radius: 4px; }
-.skip-link { position: absolute; left: -9999px; top: 8px; z-index: 100; background: var(--color-primary); color: #fff;
-             padding: var(--space-2) var(--space-3); border-radius: 6px; }
+.skip-link { position: absolute; left: -9999px; top: 8px; z-index: var(--z-modal); background: var(--color-volt); color: var(--color-volt-ink);
+             padding: var(--space-xs) var(--space-sm); border-radius: var(--radius-card); font-weight: 700; text-decoration: none; }
 .skip-link:focus { left: 8px; }
 
-/* 머리글: 짙은 남색 바탕에 흰 글자. 안쪽 검색창은 --search-* 변수로 어두운 바탕용 색을 받는다(SearchBox.vue) */
-.app-header { background: var(--color-header); color: #fff; position: sticky; top: 0; z-index: 10;
-              --search-bg: rgb(255 255 255 / .1); --search-border: rgb(255 255 255 / .16); --search-fg: #fff;
-              --search-muted: rgb(255 255 255 / .72); }
-.app-header :focus-visible { outline-color: #fff; }
-.header-row { display: flex; align-items: center; gap: var(--space-5); height: 56px; }
-.brand { display: flex; align-items: center; gap: var(--space-2); font-weight: 800; font-size: 1.05rem; letter-spacing: -.02em; color: #fff; }
-.brand:hover { text-decoration: none; }
-.logo { width: 24px; height: 24px; fill: #fff; stroke: var(--color-header); stroke-width: 1.6; }
-.nav { display: flex; gap: var(--space-1); height: 100%; }
-.nav-link { display: flex; align-items: center; flex: none; padding: 0 var(--space-3); white-space: nowrap;
-            color: rgb(255 255 255 / .74); font-weight: 500;
-            border-bottom: 2px solid transparent; transition: color .15s var(--ease), border-color .15s var(--ease); }
-.nav-link:hover { color: #fff; text-decoration: none; }
-.nav-link.is-active { color: #fff; border-bottom-color: #fff; font-weight: 700; }
-.app-header .nav > .glider { background: #fff; }
-.nav.glider-ready .nav-link.is-active { border-bottom-color: transparent; } /* the sliding underline (v-glider) draws it */
-.account { display: flex; align-items: center; gap: 6px; flex-shrink: 0; min-height: 36px; padding: 0 12px; border-radius: 999px;
-           border: 1px solid rgb(255 255 255 / .3); color: #fff; font-size: .88rem; font-weight: 600; white-space: nowrap;
-           transition: background-color .15s var(--ease), border-color .15s var(--ease); }
-.account:hover { border-color: #fff; background: rgb(255 255 255 / .1); text-decoration: none; }
-.account.is-active { border-color: #fff; background: rgb(255 255 255 / .16); }
+/* 머리글: 잉크색 띠. 지금 화면의 메뉴 아래에는 라임색 굵은 줄이 미끄러져 온다(v-glider).
+   안쪽 검색창은 --search-* 변수로 어두운 바탕용 색을 받는다(SearchBox.vue) */
+.app-header { background: var(--color-ink); color: var(--color-paper); position: sticky; top: 0; z-index: var(--z-sticky-nav);
+              --on-ink-soft: color-mix(in oklab, var(--color-paper) 72%, transparent);
+              --search-bg: color-mix(in oklab, var(--color-paper) 10%, transparent);
+              --search-border: color-mix(in oklab, var(--color-paper) 22%, transparent);
+              --search-fg: var(--color-paper); --search-muted: var(--on-ink-soft); }
+.app-header :focus-visible { outline-color: var(--color-volt); }
+.header-row { display: flex; align-items: center; gap: var(--space-lg); height: 60px; }
+.brand { display: flex; align-items: center; gap: var(--space-xs); color: var(--color-paper); text-decoration: none;
+         font-family: var(--font-display); font-weight: var(--display-weight); font-synthesis: none; font-size: var(--text-xl); line-height: 1;
+         letter-spacing: var(--tracking-display); white-space: nowrap; }
+.logo { width: 26px; height: 26px; fill: var(--color-volt); stroke: var(--color-ink); stroke-width: 1.6; }
+.nav { display: flex; gap: var(--space-2xs); height: 100%; }
+.nav-link { display: flex; align-items: center; flex: none; padding: 0 var(--space-sm); white-space: nowrap; text-decoration: none;
+            color: var(--on-ink-soft); font-weight: 500; border-bottom: 4px solid transparent; border-top: 4px solid transparent;
+            transition: color var(--dur-micro) var(--ease-out); }
+.nav-link:hover { color: var(--color-paper); }
+.nav-link:active { color: var(--color-volt); }
+.nav-link.is-active { color: var(--color-paper); border-bottom-color: var(--color-volt); font-weight: 700; }
+.nav.glider-ready .nav-link.is-active { border-bottom-color: transparent; } /* 미끄러지는 줄(v-glider)이 대신 그린다 */
+.app-header .nav.has-glider > .glider.underline { background: var(--color-volt); height: 4px; border-radius: 0; }
+.account { display: flex; align-items: center; gap: var(--space-xs); flex-shrink: 0; min-height: 36px; padding: 0 var(--space-sm);
+           border: var(--rule-bar) solid var(--color-paper); border-radius: var(--radius-card); color: var(--color-paper);
+           font-size: var(--text-sm); font-weight: 700; white-space: nowrap; text-decoration: none;
+           transition: background-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out), border-color var(--dur-micro) var(--ease-out); }
+.account:hover { background: var(--color-paper); color: var(--color-ink); }
+.account:active, .account.is-active { background: var(--color-volt); border-color: var(--color-volt); color: var(--color-volt-ink); }
 .account svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 .account .who { max-width: 8em; overflow: hidden; text-overflow: ellipsis; }
-.app-main { padding-top: var(--space-5); padding-bottom: 48px; min-height: calc(100vh - 140px); outline: none; }
-.app-footer { border-top: 1px solid var(--color-border); background: var(--color-card); color: var(--color-muted-foreground); font-size: .85rem; padding: var(--space-4) 0; }
+.app-main { padding-top: var(--space-lg); padding-bottom: var(--space-2xl); min-height: calc(100vh - 150px); outline: none; }
+.app-footer { border-top: var(--rule-bar) solid var(--color-rule-2); background: var(--color-paper-2); color: var(--color-ink-muted);
+              font-size: var(--text-sm); padding: var(--space-md) 0; }
 @media (max-width: 900px) {
   /* 태블릿·휴대폰: 첫 줄은 로고 + 메뉴, 검색창과 로그인은 둘째 줄로 내려간다.
      메뉴가 줄 폭보다 길면 줄바꿈 대신 메뉴 안에서만 옆으로 민다 */
-  .header-row { flex-wrap: wrap; height: auto; row-gap: 0; padding-bottom: var(--space-2); }
-  .header-row > .brand, .header-row > .nav { height: 48px; }
+  .header-row { flex-wrap: wrap; height: auto; row-gap: 0; padding-bottom: var(--space-xs); }
+  .header-row > .brand, .header-row > .nav { height: 52px; }
   .nav { flex: 1 1 calc(100% - 200px); min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .nav::-webkit-scrollbar { display: none; }
   .account { min-height: 40px; }
   .account .who { max-width: 5em; }
 }
 @media (max-width: 560px) {
-  .header-row { gap: var(--space-2); }
+  .header-row { gap: var(--space-xs); }
   .brand span { display: none; }
   .nav { flex-basis: calc(100% - 50px); } /* 로고 글자가 숨겨져 메뉴가 쓸 자리가 늘어난다 */
-  .nav-link { padding: 0 var(--space-2); }
+  .nav-link { padding: 0 var(--space-xs); }
 }
 
-/* shared building blocks */
-.card { background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius);
-        padding: var(--space-4); margin-bottom: var(--space-4); box-shadow: var(--shadow-card); }
-.card-head { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-3); }
+/* ---- 공용 구성 요소 ---- */
+/* 카드: 상자가 아니라 "굵은 줄 아래의 구역". 표·글 목록처럼 내용이 한 덩어리일 때 쓴다 */
+.card { border-top: var(--rule-bar) solid var(--color-rule-2); padding: var(--space-md) 0 0; margin-bottom: var(--space-xl); }
+.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-sm); flex-wrap: wrap; margin-bottom: var(--space-sm); }
 .card-head h2 { margin: 0; }
-/* 카드 테두리 없는 구역: 안에 카드 목록(경기 카드 등)이 들어갈 때 쓴다(카드 안에 카드를 넣지 않기 위해) */
-.section { margin-bottom: var(--space-5); }
-.section-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-3); flex-wrap: wrap;
-                margin-bottom: var(--space-3); }
-.section-head h2 { margin: 0; font-size: 1.15rem; }
-.muted { color: var(--color-muted-foreground); }
-.small { font-size: .85rem; }
-.num { font-variant-numeric: tabular-nums; }
-.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
-.grid-2 > * { min-width: 0; } /* a wide table scrolls inside its card instead of widening the page */
-@media (max-width: 760px) { .grid-2 { grid-template-columns: 1fr; } }
+/* 구역: 줄 없이 제목만 있는 묶음. 안에 타일 목록(경기 타일 등)이 들어갈 때 쓴다(타일이 저마다 굵은 줄을 가지므로) */
+.section { margin-bottom: var(--space-xl); }
+.section-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-sm); flex-wrap: wrap; margin-bottom: var(--space-sm); }
+.section-head h2 { margin: 0; }
+.muted { color: var(--color-ink-muted); }
+.small { font-size: var(--text-sm); }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--gap-columns); }
+.grid-2 > * { min-width: 0; } /* 넓은 표가 화면을 넓히지 않고 카드 안에서만 가로로 밀리게 */
+@media (max-width: 760px) { .grid-2 { grid-template-columns: minmax(0, 1fr); } }
 
+/* 표: 굵은 줄로 열고 닫고, 행은 가는 줄. 숫자는 고정폭(mono)이라 자릿수가 세로로 맞는다 */
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-table.data { width: 100%; border-collapse: collapse; font-size: .9rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
-table.data th, table.data td { padding: 7px 10px; border-bottom: 1px solid var(--color-border-soft); text-align: right; }
-table.data th { color: var(--color-muted-foreground); font-weight: 500; font-size: .8rem; background: var(--color-muted);
-                white-space: normal; line-height: 1.3; vertical-align: bottom; min-width: 3.2em; } /* long headers wrap instead of widening the table */
+table.data { width: 100%; border-collapse: collapse; font-size: var(--text-sm); white-space: nowrap; font-variant-numeric: tabular-nums;
+             border-bottom: var(--rule-bar) solid var(--color-rule-2); }
+table.data th, table.data td { padding: var(--space-xs) var(--space-sm); border-bottom: var(--rule-hair) solid var(--color-rule); text-align: right; }
+table.data td { font-family: var(--font-outlier); font-weight: 500; }
+table.data td.left { font-family: var(--font-body); }
+table.data th { color: var(--color-ink-muted); font-weight: 500; font-size: var(--text-xs); border-bottom: var(--rule-bar) solid var(--color-rule-2);
+                white-space: normal; word-break: keep-all; line-height: 1.3; vertical-align: bottom; min-width: 3.2em; } /* 긴 머리글은 표를 넓히지 않고 줄바꿈 */
+table.data tbody tr:last-child td { border-bottom: 0; }
 table.data .left { text-align: left; }
-table.data td.strong { font-weight: 700; color: var(--color-heading); }
-table.data tbody tr { transition: background-color .12s var(--ease); }
-table.data tbody tr:hover td { background: var(--color-primary-soft); }
-table.data .sticky { position: sticky; left: 0; background: var(--color-card); z-index: 1; }
-table.data th.sticky { background: var(--color-muted); }
+table.data td.strong { font-weight: 700; color: var(--color-ink); }
+table.data tbody tr { transition: background-color var(--dur-micro) var(--ease-out); }
+table.data tbody tr:hover td { background: var(--color-paper-2); }
+table.data .sticky { position: sticky; left: 0; background: var(--color-paper); z-index: var(--z-base); }
 table.data th.sortable { cursor: pointer; user-select: none; }
 table.data th.sortable button { all: unset; cursor: pointer; }
-table.data th.sortable button:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 2px; }
-table.data th[aria-sort] { color: var(--color-primary); font-weight: 700; }
-/* 순위표의 포스트시즌 구간 표시: 순위 숫자 앞의 점(po 파랑 = 포스트시즌권, semi 주황 = 준플레이오프권). 뜻은 표 아래 범례가 설명한다 */
-table.data td.rank { font-weight: 700; }
-table.data td.rank::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%;
-                             vertical-align: 2px; background: transparent; }
-table.data tr.po td.rank::before { background: var(--color-primary); }
-table.data tr.semi td.rank::before { background: var(--color-accent); }
-.zone-legend { display: flex; align-items: center; gap: 4px 6px; flex-wrap: wrap; margin: var(--space-2) 0 0; }
-.zone-legend .key { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--color-primary); }
-.zone-legend .key.semi { background: var(--color-accent); margin-left: var(--space-2); }
+table.data th.sortable button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+table.data th[aria-sort] { color: var(--color-ink); font-weight: 700; }
+/* 순위 칸: 포스트시즌권(po)은 잉크로 채운 칸, 준플레이오프권(semi)은 옅게 채운 칸. 뜻은 표 아래 범례가 설명한다 */
+table.data td.rank { font-weight: 700; text-align: center; }
+/* 표 안의 링크(팀·선수 이름)와 기사 제목·태그는 밑줄 없이 두고, 올렸을 때만 밑줄을 보인다(행마다 밑줄이 그어지면 표가 지저분해진다) */
+table.data a, .articles a { text-decoration-line: none; }
+table.data a:hover { text-decoration-line: underline; }
+table.data tr.po td.rank, table.data tr.po:hover td.rank { background: var(--color-ink); color: var(--color-paper); }
+table.data tr.semi td.rank, table.data tr.semi:hover td.rank { background: var(--color-paper-3); }
+.zone-legend { display: flex; align-items: center; gap: var(--space-2xs) var(--space-xs); flex-wrap: wrap; margin: var(--space-xs) 0 0; }
+.zone-legend .key { display: inline-block; width: 12px; height: 12px; background: var(--color-ink); }
+.zone-legend .key.semi { background: var(--color-paper-3); border: var(--rule-hair) solid var(--color-rule); margin-left: var(--space-xs); }
 
-.tabs { display: flex; gap: var(--space-1); flex-wrap: wrap; margin-bottom: var(--space-3); }
-.tab { border: 1px solid var(--color-border); background: var(--color-card); color: var(--color-muted-foreground); padding: 6px 12px;
-       border-radius: 999px; cursor: pointer; font: inherit; font-size: .88rem; min-height: 34px;
-       transition: background-color .15s var(--ease), color .15s var(--ease), border-color .15s var(--ease); }
-.tab:hover { border-color: var(--color-primary); color: var(--color-primary); }
-.tab.active, .tab[aria-pressed='true'] { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
-select { font: inherit; padding: 6px 10px; min-height: 34px; border: 1px solid var(--color-border); border-radius: 8px;
-         background: var(--color-card); color: var(--color-foreground); cursor: pointer; }
-select:hover { border-color: var(--color-primary); }
+/* 탭(토글 버튼 묶음): 선택된 탭은 라임 채움 + 잉크 글자 */
+.tabs { display: flex; gap: var(--space-2xs); flex-wrap: wrap; margin-bottom: var(--space-sm); }
+.tab { border: var(--rule-hair) solid var(--color-rule); background: var(--color-paper); color: var(--color-ink-muted); padding: 0 var(--space-sm);
+       border-radius: var(--radius-card); cursor: pointer; font-size: var(--text-sm); font-weight: 500; min-height: 36px;
+       transition: background-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out), border-color var(--dur-micro) var(--ease-out); }
+.tab:hover { border-color: var(--color-ink); color: var(--color-ink); }
+.tab:active { background: var(--color-paper-3); }
+.tab.active, .tab[aria-pressed='true'] { background: var(--color-volt); border-color: var(--color-ink); color: var(--color-volt-ink); font-weight: 700; }
+.tabs.has-glider > .glider { background: var(--color-volt); border-radius: var(--radius-card); }
+select { padding: 0 var(--space-sm); min-height: 36px; border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-card);
+         background: var(--color-paper); color: var(--color-ink); cursor: pointer; }
+select:hover { border-color: var(--color-ink); }
 @media (pointer: coarse) { .tab, select { min-height: 44px; } }
 
-.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: .75rem; font-weight: 700; line-height: 1.6; }
-.badge.w { background: var(--color-primary-soft); color: var(--color-primary); }
-.badge.l { background: var(--color-muted); color: var(--color-muted-foreground); }
-.badge.today { background: var(--color-accent-soft); color: var(--color-accent); }
-.empty { color: var(--color-muted-foreground); padding: var(--space-5) 0; text-align: center; }
+/* 배지: 승 = 잉크 채움, 패 = 옅은 칸, 오늘 = 라임 채움 */
+.badge { display: inline-block; padding: 0 var(--space-xs); border-radius: 2px; font-size: var(--text-xs); font-weight: 700; line-height: 1.7; }
+.badge.w { background: var(--color-ink); color: var(--color-paper); }
+.badge.l { background: var(--color-paper-3); color: var(--color-ink-muted); }
+.badge.today { background: var(--color-volt); color: var(--color-volt-ink); }
+.empty { color: var(--color-ink-muted); padding: var(--space-lg) 0; text-align: center; }
 
-/* buttons and form fields (accounts) */
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; padding: 0 16px;
-       border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-card); color: var(--color-foreground);
-       font: inherit; font-size: .92rem; font-weight: 600; cursor: pointer;
-       transition: background-color .15s var(--ease), color .15s var(--ease), border-color .15s var(--ease); }
-.btn:hover { border-color: var(--color-primary); color: var(--color-primary); text-decoration: none; }
-.btn.primary { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
-.btn.primary:hover { background: var(--color-heading); color: #fff; }
-.btn.danger { color: var(--color-bad); border-color: #fecaca; }
-.btn.danger:hover { background: #fef2f2; border-color: var(--color-bad); }
-.btn:disabled { opacity: .6; cursor: not-allowed; }
-.field { display: grid; gap: 6px; margin-bottom: var(--space-4); }
-.field > label { font-weight: 600; font-size: .9rem; }
-.field .hint { font-size: .8rem; color: var(--color-muted-foreground); margin: 0; }
-.field .err { font-size: .82rem; color: var(--color-bad); margin: 0; }
-.input { width: 100%; min-height: 44px; padding: 8px 12px; font: inherit; color: var(--color-foreground); background: var(--color-card);
-         border: 1px solid var(--color-border); border-radius: 8px; transition: border-color .15s var(--ease); }
-.input:hover { border-color: var(--color-primary); }
-.input[aria-invalid='true'] { border-color: var(--color-bad); }
+/* 버튼: 기본은 잉크 테두리, 주 버튼은 라임 채움. 글자는 표제 글꼴 */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-xs); min-height: 40px; padding: 0 var(--space-md);
+       border: var(--rule-bar) solid var(--color-ink); border-radius: var(--radius-card); background: var(--color-paper); color: var(--color-ink);
+       font-family: var(--font-display); font-weight: var(--display-weight); font-synthesis: none; font-size: var(--text-md);
+       text-transform: uppercase; text-decoration: none; cursor: pointer;
+       transition: background-color var(--dur-micro) var(--ease-out), color var(--dur-micro) var(--ease-out), border-color var(--dur-micro) var(--ease-out); }
+.btn:hover { background: var(--color-ink); color: var(--color-paper); }
+.btn:active { background: var(--color-ink-2); color: var(--color-paper); }
+.btn.primary { background: var(--color-volt); border-color: var(--color-volt); color: var(--color-volt-ink); }
+.btn.primary:hover { background: var(--color-ink); border-color: var(--color-ink); color: var(--color-paper); }
+.btn.danger { color: var(--color-error); border-color: var(--color-error); }
+.btn.danger:hover { background: var(--color-error); color: var(--color-paper); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.field { display: grid; gap: var(--space-2xs); margin-bottom: var(--space-md); }
+.field > label { font-weight: 700; font-size: var(--text-sm); }
+.field .hint { font-size: var(--text-xs); color: var(--color-ink-muted); margin: 0; }
+.field .err { font-size: var(--text-sm); color: var(--color-error); margin: 0; }
+.input { width: 100%; min-height: 44px; padding: var(--space-xs) var(--space-sm); color: var(--color-ink); background: var(--color-paper);
+         border: var(--rule-hair) solid var(--color-rule); border-radius: var(--radius-card); transition: border-color var(--dur-micro) var(--ease-out); }
+.input:hover { border-color: var(--color-ink); }
+.input[aria-invalid='true'] { border-color: var(--color-error); }
 @media (pointer: coarse) { .btn { min-height: 44px; } }
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition-duration: 0ms !important; animation-duration: 0ms !important; animation-iteration-count: 1 !important; }
-}
 </style>

@@ -1,0 +1,15 @@
+[
+ {
+  "mode": "redesign",
+  "depth": "full",
+  "scope": "app",
+  "shape": "app screen",
+  "theme": "sport",
+  "axes": "light/display-condensed/chromatic-volt",
+  "nav": "kept top bar as ink band",
+  "footer": "kept",
+  "signature": "fixture board of ruled score tiles",
+  "prompt": "live sports broadcast scoreboard for volleyball league",
+  "date": "2026-11-11"
+ }
+]

@@ -6,13 +6,19 @@
                              문자중계로 계산한 리시브 정확 뒤/아닐 때 공격 성공률과 접전(20:20 이후) 랠리 승률
     → player_season_summary  대회별 선수 지표 + 같은 포지션 안의 백분위
     → HDFS /marts/kovo/{테이블}/ (Parquet) 과 PostgreSQL (한 트랜잭션, sql/merge_marts.sql)
-    → HDFS /marts/kovo/match_elo/  모든 경기(예정 경기 포함)의 경기 전 Elo (build_features.py의 입력)
+    → HDFS /marts/kovo/match_elo/  모든 경기(예정 경기 포함)의 경기 전 Elo와 선수 Elo 팀 전력 (build_features.py의 입력)
 
 매번 모든 시즌을 처음부터 다시 계산한다(몇 초면 끝나고, Elo는 전체 역사에 따라 달라지므로).
 
 Elo 규칙: 시작 1500점. K = 24 × (1, 1.25, 1.5) — 세트 차가 1·2·3일 때. 홈 이점은 전체 경기의 홈 승률에서 구한다.
 새 시즌 첫 경기 때 점수를 1500 쪽으로 3분의 1만큼 되돌린다(선수 이동 등으로 전력이 섞이는 것을 반영).
   (Elo: 이길 확률을 점수 차로 예측하고, 결과가 예측보다 좋으면 오르고 나쁘면 내리는 평가 방식)
+
+선수 Elo(예측 특징 pelo_*, 화면에는 쓰지 않음): 선수마다 점수를 두고, 경기 전 팀 전력 = 그 팀의 '예상 출전 명단'
+(앞선 경기들의 세트 출전 비율을 지수 이동 평균한 것, 이번 경기의 실제 출전은 절대 쓰지 않음) 점수의 가중 평균.
+경기 뒤에는 뛴 선수마다 (팀 Elo와 같은 식의 변화량) × (자기 출전 세트 / 경기 세트 수)만큼 움직인다. 이적하면 점수가
+선수를 따라가므로 팀 전력이 바로 바뀐다. 새 시즌에는 각 선수를 1500이 아니라 '앞 두 시즌 중 가장 최근 능력치 카드'
+쪽으로 절반 되돌린다(카드 종합 60 = 1500, 1점 = 12 Elo). 처음 보는 선수는 1500에서 시작한다.
 
 실행: docker compose exec airflow sh /opt/airflow/spark_jobs/submit.sh build_marts.py (평소에는 kovo_daily 등 DAG)
 """
@@ -31,6 +37,15 @@ FINISHED = ["FINISHED", "CONFIRMED"]  # 끝난 경기 상태(CONFIRMED = 품질 
 REGULAR = "201"  # 정규리그 리그 코드
 
 ELO_START, ELO_K, SEASON_CARRY = 1500.0, 24.0, 2 / 3  # 시작 점수, 기본 K, 새 시즌에 남기는 비율
+# 선수 Elo 설정. 2026-11-12 실험에서 2011-12~2018-19 시즌으로 고르고 2019-20~2025-26 7시즌(1,726경기)으로 시험했다:
+# 경기 전 확률의 log loss 0.6297 (팀 Elo 0.6414, 팀 Elo를 같은 방식으로 다시 조정해도 0.6387), 7시즌 모두 우세,
+# 재조정 팀 Elo보다 경기당 -0.0091 (표준오차 0.0023). 신인·외국인 포지션별 출발 보정과 팀 Elo 섞기는 효과가 없어 뺐다.
+PELO_K = 36.0          # 기본 K(세트 차 보정은 팀 Elo와 같다)
+PELO_CARRY = 0.5       # 새 시즌에 남기는 비율(나머지는 카드 쪽으로)
+PELO_ALPHA = 0.7       # 예상 출전 명단의 이동 평균에서 가장 최근 경기의 비중
+PELO_CARD_SCALE = 12.0  # 카드 종합 1점 = Elo 12점 (60 = 1500)
+PELO_DROP = 0.02       # 예상 출전 비중이 이보다 작아지면 명단에서 뺀다
+CARD_SEASONS = 2       # 앞 몇 시즌의 카드까지 쓰는가(이번 시즌 카드는 쓰지 않는다: 이번 경기 결과가 들어 있다)
 MIN_SET_SHARE = 1 / 3  # 순위 자격: 팀 세트의 1/3 이상 출전(선수 순위와 같은 규칙, backend/league/standings.py)
 # 지표 → 높을수록 좋은가? (범실은 낮을수록 좋음). 백분위를 매길 방향을 정한다
 INDICATORS = {"attack_success_rate": True, "attack_efficiency": True, "receive_efficiency": True,
@@ -44,6 +59,12 @@ def read(spark, name):
 
 
 # ---------------------------------------------------------------- Elo (경기 순서대로 계산해야 해서 드라이버에서 실행)
+def home_advantage(rows) -> float:
+    """홈 승률을 Elo 점수 차로 환산한 홈 이점(예: 홈 승률 55% ≈ +35점). 팀 Elo와 선수 Elo가 같은 값을 쓴다."""
+    home_rate = sum(r.home_sets > r.away_sets for r in rows) / max(1, len(rows))
+    return -400 * math.log10(1 / home_rate - 1) if 0 < home_rate < 1 else 0.0
+
+
 def elo(matches, upcoming=()):
     """Elo를 경기 순서대로 갱신한다.
     matches: 시간순으로 정렬된 끝난 경기 행(season_code, game_no, gender, home_code, away_code, home_sets,
@@ -52,8 +73,7 @@ def elo(matches, upcoming=()):
     (예정 경기는 지금 점수). 다음 단계(예측 특징)에서 결과를 미리 보지 않은 값으로 쓰인다."""
     rows = list(matches)
     home_rate = sum(r.home_sets > r.away_sets for r in rows) / max(1, len(rows))
-    # 홈 승률을 Elo 점수 차로 환산한 홈 이점(예: 홈 승률 55% ≈ +35점)
-    home_adv = -400 * math.log10(1 / home_rate - 1) if 0 < home_rate < 1 else 0.0
+    home_adv = home_advantage(rows)
     rating, season_of = {}, {}  # 팀 → 지금 점수, 팀 → 그 점수가 속한 시즌
     out, pre, hits, log_loss = [], [], 0, 0.0
 
@@ -88,6 +108,73 @@ def elo(matches, upcoming=()):
     n = max(1, len(rows))
     return out, pre, {"matches": len(rows), "home_win_rate": round(home_rate, 4), "home_advantage_elo": round(home_adv, 1),
                  "elo_accuracy": round(hits / n, 4), "elo_log_loss": round(log_loss / n, 4)}
+
+
+def player_elo(rows, lines, cards, upcoming=()):
+    """선수 Elo로 모든 경기의 경기 전 팀 전력을 계산한다(머리말의 규칙).
+    rows: 시간순 끝난 경기(season_code, game_no, home_code, away_code, home_sets, away_sets).
+    lines: {(시즌, 경기 번호): [(팀 코드, 선수 코드, 출전 세트 수)]} — 출전 세트가 0인 줄은 없어도 된다.
+    cards: {선수 코드: {시즌: 카드 종합}}. upcoming: 예정 경기(season_code, game_no, home_code, away_code).
+    돌려주는 값: ({(시즌, 경기 번호): (홈 전력, 원정 전력, 홈 승리 확률)}, 요약 딕셔너리)."""
+    home_adv = home_advantage(rows)
+    rating, season_of = {}, {}  # 선수 → 점수, 그 점수가 속한 시즌
+    lineup = {}  # 팀 → {선수: 예상 출전 비중}
+    pre, log_loss, hits = {}, 0.0, 0
+
+    def target(player, season):
+        """새 시즌에 되돌아갈 점수: 앞 CARD_SEASONS 시즌 중 가장 최근 카드, 없으면 1500."""
+        for back in range(1, CARD_SEASONS + 1):
+            card = cards.get(player, {}).get(f"{int(season) - back:03d}")
+            if card is not None:
+                return ELO_START + PELO_CARD_SCALE * (card - 60)
+        return ELO_START
+
+    def current(player, season):
+        """선수가 `season` 경기에 들고 들어가는 점수(새 시즌이면 카드 쪽으로 되돌림). 처음 보는 선수는 1500."""
+        if player not in rating:
+            rating[player], season_of[player] = ELO_START, season
+        elif season_of[player] != season:
+            t = target(player, season)
+            rating[player] = t + (rating[player] - t) * PELO_CARRY
+            season_of[player] = season
+        return rating[player]
+
+    def strength(team, season):
+        """예상 출전 명단 점수의 가중 평균. 아직 명단이 없는 팀(리그 첫 경기)은 1500."""
+        squad = lineup.get(team) or {}
+        total = sum(squad.values())
+        return sum(w * current(p, season) for p, w in squad.items()) / total if total else ELO_START
+
+    for r in rows:
+        key = (r.season_code, r.game_no)
+        sh, sa = strength(r.home_code, r.season_code), strength(r.away_code, r.season_code)
+        p_home = 1 / (1 + 10 ** ((sa - sh - home_adv) / 400))
+        pre[key] = (round(sh, 2), round(sa, 2), round(p_home, 4))
+        home_won = r.home_sets > r.away_sets
+        hits += (p_home >= 0.5) == home_won
+        log_loss -= math.log(p_home if home_won else 1 - p_home)
+        change = PELO_K * (1 + 0.25 * (abs(r.home_sets - r.away_sets) - 1)) * ((1.0 if home_won else 0.0) - p_home)
+        match_sets = r.home_sets + r.away_sets
+        played = {r.home_code: {}, r.away_code: {}}
+        for team, player, sets in lines.get(key, ()):
+            if sets <= 0 or team not in played:
+                continue
+            current(player, r.season_code)
+            rating[player] += (change if team == r.home_code else -change) * sets / match_sets
+            played[team][player] = sets / match_sets
+        for team, shares in played.items():
+            if not shares:  # 선수 기록이 없는 경기(옛 몰수 경기 등): 명단을 그대로 둔다
+                continue
+            squad = lineup.setdefault(team, {})
+            for player in set(squad) | set(shares):
+                squad[player] = (1 - PELO_ALPHA) * squad.get(player, 0.0) + PELO_ALPHA * shares.get(player, 0.0)
+            for player in [p for p, w in squad.items() if w < PELO_DROP]:
+                del squad[player]
+    for u in upcoming:  # 예정 경기: 지금 명단과 점수로 계산만 하고 아무것도 갱신하지 않는다
+        sh, sa = strength(u.home_code, u.season_code), strength(u.away_code, u.season_code)
+        pre[(u.season_code, u.game_no)] = (round(sh, 2), round(sa, 2), round(1 / (1 + 10 ** ((sa - sh - home_adv) / 400)), 4))
+    n = max(1, len(rows))
+    return pre, {"players": len(rating), "pelo_accuracy": round(hits / n, 4), "pelo_log_loss": round(log_loss / n, 4)}
 
 
 # ---------------------------------------------------------------- 사이드아웃 / 브레이크 (ANL-11)
@@ -283,12 +370,27 @@ def main():
 
     upcoming = read(spark, "match").where(F.col("status").isin("SCHEDULED", "LIVE")) \
         .select("season_code", "game_no", "home_code", "away_code").collect()
-    rating_rows, pre_rows, info = elo(
-        matches.select("season_code", "game_no", "gender", "home_code", "away_code", "home_sets", "away_sets",
-                       "game_date", "start_time")
-        .orderBy("game_date", F.coalesce("start_time", F.lit("00:00")), "season_code", "game_no").toLocalIterator(),
-        upcoming)
+    ordered = matches.select("season_code", "game_no", "gender", "home_code", "away_code", "home_sets", "away_sets",
+                             "game_date", "start_time") \
+        .orderBy("game_date", F.coalesce("start_time", F.lit("00:00")), "season_code", "game_no").collect()
+    rating_rows, pre_rows, info = elo(ordered, upcoming)
     print("elo:", json.dumps(info))
+    # 선수 Elo: 경기별 출전 세트(played_sets의 "1" 개수)와 선수 카드(player_ratings.py가 앞선 실행에서 쓴 것)
+    lines = {}
+    for r in player_stats.select("season_code", "game_no", "team_code", "player_code",
+                                 (F.length("played_sets") - F.length(F.regexp_replace("played_sets", "1", ""))).alias("sets")) \
+            .where("sets > 0").toLocalIterator():
+        lines.setdefault((r.season_code, r.game_no), []).append((r.team_code, r.player_code, r.sets))
+    cards = {}
+    try:
+        for r in spark.read.parquet(f"{MARTS}/player_rating").where(F.col("overall").isNotNull()) \
+                .select("season_code", "player_code", "overall").toLocalIterator():
+            cards.setdefault(r.player_code, {})[r.season_code] = float(r.overall)
+    except Exception as exc:  # 처음 설치한 직후처럼 카드가 아직 없으면 모든 선수를 1500 쪽으로 되돌린다
+        print("player cards not found, player Elo regresses toward 1500:", exc.__class__.__name__)
+    pelo, pelo_info = player_elo(ordered, lines, cards, upcoming)
+    print("player elo:", json.dumps(pelo_info))
+    pre_rows = [(s, g, h, a, p, *pelo.get((s, g), (None, None, None))) for s, g, h, a, p in pre_rows]
     ratings = spark.createDataFrame(rating_rows, "season_code string, game_no int, team_code string, rated_on string, "
                                                  "rating double, rating_change double, win_prob double").cache()
 
@@ -304,7 +406,8 @@ def main():
         df.write.mode("overwrite").parquet(f"{MARTS}/{name}")
     # 모든 경기(끝난 경기와 예정 경기)의 경기 전 Elo: build_features.py의 입력. PostgreSQL에는 넣지 않는다
     spark.createDataFrame(pre_rows, "season_code string, game_no int, home_elo double, away_elo double, "
-                                    "elo_home_win_prob double").write.mode("overwrite").parquet(f"{MARTS}/match_elo")
+                                    "elo_home_win_prob double, home_pelo double, away_pelo double, "
+                                    "pelo_home_win_prob double").write.mode("overwrite").parquet(f"{MARTS}/match_elo")
     # staging 테이블 적재 + sql/merge_marts.sql 실행을 한 트랜잭션으로(pg_merge.py 참고)
     for row in load_and_merge(spark, tables, MERGE_SQL, "merge_marts"):
         print("merge:", *row)

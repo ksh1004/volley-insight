@@ -5,7 +5,8 @@ RUNNING → SUCCESS/FAILED 상태가 올바른지, Kafka가 죽어 있으면 KOV
 """
 import pytest
 
-from collectors.kovo_collectors import ScheduleCollector, SeasonCollector, leagues_of
+from collectors.kovo_client import KovoApiError
+from collectors.kovo_collectors import HonorCollector, ScheduleCollector, SeasonCollector, leagues_of
 from tests.fakes import RecordingPublisher, ok
 
 # 시즌 목록 응답. 022 시즌에는 정규리그(201)·플레이오프(202) 외에 실제 경기가 아닌 리그 코드
@@ -113,3 +114,38 @@ def test_schedule_collector_keeps_games_of_its_run_and_run_id():
     col.run(season_code="023", genders=("1",))
     assert col.games == [{"gnum": 1}]
     assert col.run_id and all(m[2]["run_id"] == col.run_id for m in pub.on("kovo.schedule"))
+
+
+class HonorClient:
+    """선수 수상 API 흉내: 코드별로 응답 본문이나 예외를 정해 둔다."""
+
+    def __init__(self, answers):
+        self.answers, self.asked = answers, []
+
+    def player_honor(self, code):
+        self.asked.append(code)
+        answer = self.answers[code]
+        if isinstance(answer, Exception):
+            raise answer
+        return ok(answer).json()
+
+
+def test_honor_collector_one_message_per_player_and_skips_unknown_codes():
+    """선수마다 응답 하나를 선수 코드 키로 kovo.player에 보내고, KOVO에 없는 선수(404)는 건너뛴다."""
+    honor = {"awards": ["2025~2026 V-리그 라운드 MVP (5R)"], "tripleCrowns": [], "standardRecords": []}
+    client = HonorClient({"1000525": honor, "9999999": KovoApiError("not found", status=404), "0000463": honor})
+    pub = RecordingPublisher()
+    col = HonorCollector(client, pub)
+    assert col.run(codes=["1000525", "9999999", "0000463"]) == 2
+    assert [(m[1], m[2]["endpoint"]) for m in pub.on("kovo.player")] == [
+        ("1000525", "/players/1000525/honor"), ("0000463", "/players/0000463/honor")]
+    assert col.skipped == ["9999999"]
+    assert pub.on("ops.collection-log")[-1][2]["target"] == "players=3 [1000525, 9999999, 0000463]"
+
+
+def test_honor_collector_fails_on_other_errors():
+    """404가 아닌 실패(예: KOVO 장애)는 건너뛰지 않고 실행을 실패로 남긴다."""
+    pub = RecordingPublisher()
+    with pytest.raises(KovoApiError):
+        HonorCollector(HonorClient({"1": KovoApiError("down", status=503)}), pub).run(codes=["1"])
+    assert pub.on("ops.collection-log")[-1][2]["status"] == "FAILED"

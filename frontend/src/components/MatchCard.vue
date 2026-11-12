@@ -27,7 +27,7 @@ const label = computed(() => {
 </script>
 
 <template>
-  <RouterLink :to="live ? `/matches/${m.key}/live` : `/matches/${m.key}`" class="match-card lift" :class="{ post: m.league_code !== '201' }" :aria-label="label">
+  <RouterLink :to="live ? `/matches/${m.key}/live` : `/matches/${m.key}`" class="match-card" :class="{ post: m.league_code !== '201' }" :aria-label="label">
     <div class="meta">
       <span class="when"><svg v-if="favorite" class="star" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z" /></svg>{{ when }}</span>
       <span class="tags"><span>{{ GENDERS[m.gender] }}</span><span :class="{ stage: m.league_code !== '201' }">{{ stage }}</span></span>
@@ -38,7 +38,7 @@ const label = computed(() => {
         <b :class="{ won: homeWon }">{{ m.home_sets }}</b><i>:</i><b :class="{ won: awayWon }">{{ m.away_sets }}</b>
       </span>
       <span v-else-if="live" class="score live">
-        <span class="pill"><i class="dot" aria-hidden="true" />진행 중</span>
+        <span class="pill">진행 중</span>
         <span class="sets"><b>{{ m.home_sets }}</b><i>:</i><b>{{ m.away_sets }}</b></span>
       </span>
       <span v-else class="score pending">{{ STATUS[m.status] }}</span>
@@ -59,36 +59,40 @@ const label = computed(() => {
 </template>
 
 <style scoped>
-.match-card { display: block; padding: 10px 14px 12px; border: 1px solid var(--color-border); border-radius: var(--radius);
-              background: var(--color-card); color: var(--color-foreground); box-shadow: var(--shadow-card);
-              transition: border-color .15s var(--ease), box-shadow .15s var(--ease), transform var(--dur-fast) var(--ease-out); }
-.match-card:hover { border-color: var(--color-primary); box-shadow: 0 2px 8px rgb(30 64 175 / .08); text-decoration: none; }
-.meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: .78rem; color: var(--color-muted-foreground); margin-bottom: 6px; }
-.when { display: inline-flex; align-items: center; gap: 4px; color: var(--color-foreground); font-weight: 500; font-variant-numeric: tabular-nums; }
-.star { width: 14px; height: 14px; fill: var(--color-accent); }
-.tags { display: flex; gap: 6px; }
-.tags .stage { color: var(--color-accent); font-weight: 700; }
-.teams { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; font-weight: 500; }
+/* 경기 타일: 상자 대신 굵은 줄 아래의 옅은 칸. 팀 이름과 세트 스코어는 표제 글꼴로 크게, 이긴 쪽 숫자는 라임 칸 위에 놓인다 */
+.match-card { display: block; padding: var(--space-sm) var(--space-md) var(--space-md); background: var(--color-paper-2);
+              border-top: var(--rule-bar) solid var(--color-rule-2); border-radius: 0 0 var(--radius-card) var(--radius-card);
+              color: var(--color-ink); text-decoration: none; transition: background-color var(--dur-micro) var(--ease-out); }
+.match-card:hover { background: var(--color-paper-3); }
+.match-card:active { border-top-color: var(--color-ink); }
+.meta { display: flex; justify-content: space-between; align-items: center; gap: var(--space-xs); font-size: var(--text-xs);
+        color: var(--color-ink-muted); margin-bottom: var(--space-xs); }
+.when { display: inline-flex; align-items: center; gap: var(--space-2xs); color: var(--color-ink); font-family: var(--font-outlier); font-weight: 500;
+        font-variant-numeric: tabular-nums; }
+.star { width: 14px; height: 14px; fill: var(--color-ink); }
+.tags { display: flex; gap: var(--space-xs); }
+.tags .stage { color: var(--color-ink); font-weight: 700; }
+.teams { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: var(--space-sm);
+         font-family: var(--font-display); font-weight: var(--display-weight); font-synthesis: none; font-size: var(--text-lg); line-height: 1.15; }
 .team { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .team.home { text-align: right; }
-.team.won { color: var(--color-heading); font-weight: 700; }
-.team.lost { color: var(--color-muted-foreground); }
-.score { display: flex; align-items: baseline; gap: 6px; font-size: 1.25rem; min-width: 64px; justify-content: center; font-variant-numeric: tabular-nums; }
-.score b { font-weight: 500; color: var(--color-muted-foreground); }
-.score b.won { color: var(--color-primary); font-weight: 700; }
-.score i { font-style: normal; color: var(--color-muted-foreground); font-size: 1rem; }
-.score.pending { font-size: .78rem; color: var(--color-muted-foreground); background: var(--color-muted); border-radius: 999px; padding: 2px 10px; }
-.foot { text-align: center; margin-top: 6px; color: var(--color-muted-foreground); display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;
-        font-variant-numeric: tabular-nums; }
-.set .w { color: var(--color-foreground); font-weight: 700; }
-.prob { margin-top: 8px; }
-.score.live { flex-direction: column; align-items: center; gap: 2px; }
-.score.live .sets { display: flex; gap: 6px; align-items: baseline; }
-.score.live .sets b { color: var(--color-foreground); font-weight: 700; }
-.pill { display: inline-flex; align-items: center; gap: 5px; font-size: .72rem; font-weight: 700; color: var(--color-accent);
-        background: var(--color-accent-soft); border-radius: 999px; padding: 1px 8px; }
-.dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 1.6s ease-in-out infinite; }
-@keyframes pulse { 50% { opacity: .35; } }
-@media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
-.hit { text-align: center; margin-top: 6px; }
+.team.lost { color: var(--color-ink-muted); }
+.score { display: flex; align-items: center; gap: var(--space-2xs); justify-content: center; font-size: var(--text-2xl); line-height: 1;
+         font-variant-numeric: tabular-nums; }
+.score b { min-width: 1.15em; padding: var(--space-3xs) 0; text-align: center; border-radius: 2px; color: var(--color-ink-muted); }
+.score b.won { background: var(--color-volt); color: var(--color-volt-ink); }
+.score i { font-style: normal; color: var(--color-ink-muted); font-size: var(--text-md); }
+.score.pending { font-family: var(--font-body); font-weight: 500; font-size: var(--text-xs); color: var(--color-ink-muted);
+                 background: var(--color-paper-3); border-radius: 2px; padding: var(--space-3xs) var(--space-xs); }
+.foot { display: flex; gap: var(--space-sm); justify-content: center; flex-wrap: wrap; margin-top: var(--space-xs); text-align: center;
+        font-family: var(--font-outlier); font-size: var(--text-xs); color: var(--color-ink-muted); font-variant-numeric: tabular-nums; }
+.foot .muted { font-family: var(--font-body); font-size: var(--text-sm); }
+.set .w { color: var(--color-ink); font-weight: 700; }
+.prob { margin-top: var(--space-sm); }
+.score.live { flex-direction: column; gap: var(--space-2xs); }
+.score.live .sets { display: flex; gap: var(--space-2xs); align-items: center; }
+.score.live .sets b { color: var(--color-ink); }
+.pill { font-family: var(--font-body); font-size: var(--text-xs); font-weight: 700; color: var(--color-volt-ink); background: var(--color-volt);
+        border-radius: 2px; padding: 0 var(--space-xs); line-height: 1.7; }
+.hit { text-align: center; margin-top: var(--space-xs); }
 </style>

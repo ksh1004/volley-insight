@@ -51,7 +51,9 @@ FEATURES = os.environ.get("FEATURES_PATH", "hdfs://namenode:9000/features/kovo")
 EXPERIMENT = "match-winner"
 MODEL_NAME = "match-winner"
 # 모델에 넣는 특징(build_features.py가 만든 컬럼 중에서). 바꾸면 다음 학습부터 새 모델에 반영된다
-FEATURE_COLS = ["elo_diff", "elo_prob", "form_win", "form_setdiff", "form_pointdiff", "pointdiff", "attack", "receive",
+# 모델 입력. 팀 Elo(elo_*) 대신 선수 Elo 팀 전력(pelo_*)을 쓴다: 2026-11-12 챔피언 설정으로 016~022 walk-forward 비교에서
+# 팀 Elo 0.6277 → 선수 Elo 0.6251(둘 다 넣으면 0.6259), 7시즌 모두 개선. elo_prob는 비교 기준(elo_scores)으로만 남는다.
+FEATURE_COLS = ["pelo_diff", "pelo_prob", "form_win", "form_setdiff", "form_pointdiff", "pointdiff", "attack", "receive",
                 "block", "ace", "error", "rest", "h2h_rate", "h2h_n", "postseason", "men", "squad", "squad_known"]
 BACKTEST_SEASONS = 4  # 백테스트할 최근 시즌 수
 MERGE_SQL = Path(__file__).resolve().parent / "sql" / "merge_backtest.sql"
@@ -166,8 +168,10 @@ def save_backtest(spark, rows, version, run_id, metrics, elo, train_seasons, tes
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from pg_merge import load_and_merge
 
+    # 성적 이름은 predict_matches.py와 같게(test_*, elo_test_*): 사이트(analytics/queries.py)가 이 이름으로 읽는다
     mv = spark.createDataFrame([(MODEL_NAME, int(version), run_id, json.dumps(
-        {**metrics, **{f"elo_{k}": v for k, v in elo.items()}}), train_seasons, test_season)],
+        {**{f"test_{k}": v for k, v in metrics.items()}, **{f"elo_test_{k}": v for k, v in elo.items()}}),
+        train_seasons, test_season)],
         "name string, version int, run_id string, metrics string, train_seasons string, test_season string")
     bt = spark.createDataFrame(rows, "season_code string, game_no int, home_win_prob double, elo_home_win_prob double, "
                                      "pred_home_sets int, pred_away_sets int, home_won boolean, train_seasons string")

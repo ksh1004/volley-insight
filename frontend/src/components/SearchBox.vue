@@ -117,7 +117,7 @@ onBeforeUnmount(() => { clearTimeout(timer); controller?.abort() })
 .icon { position: absolute; left: 10px; top: 50%; width: 16px; height: 16px; transform: translateY(-50%);
         fill: none; stroke: var(--search-muted, var(--color-muted-foreground)); stroke-width: 1.8; pointer-events: none; }
 .search:focus-within .icon { stroke: var(--color-muted-foreground); }
-input { width: 100%; font: inherit; font-size: .9rem; padding: 7px 10px 7px 32px; min-height: 36px; border-radius: 999px;
+input { width: 100%; font: inherit; font-size: .9rem; padding: 4px 12px 4px 32px; min-height: 36px; border-radius: var(--radius);
         border: 1px solid var(--search-border, var(--color-border)); background: var(--search-bg, var(--color-muted));
         color: var(--search-fg, var(--color-foreground));
         transition: border-color .15s var(--ease), background-color .15s var(--ease), color .15s var(--ease); }
@@ -127,8 +127,8 @@ input:focus { background: var(--color-card); border-color: var(--color-card); co
 input::placeholder { color: var(--search-muted, var(--color-muted-foreground)); }
 input:focus::placeholder { color: var(--color-muted-foreground); }
 .list { position: absolute; top: calc(100% + 6px); left: 0; right: 0; min-width: 260px; margin: 0; padding: 4px; list-style: none;
-        background: var(--color-card); border: 1px solid var(--color-border); border-radius: var(--radius);
-        box-shadow: 0 8px 24px rgb(15 23 42 / .12); z-index: 20; }
+        background: var(--color-card); color: var(--color-foreground); border: 2px solid var(--color-foreground);
+        border-radius: var(--radius); z-index: 20; }
 .option { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-radius: 6px; cursor: pointer; min-height: 40px; align-items: center;
           transition: background-color 90ms linear; }
 .option.active { background: var(--color-primary-soft); }

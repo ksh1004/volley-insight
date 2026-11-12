@@ -139,7 +139,18 @@ class LeagueApiTest(TestCase):
 
     def test_player_detail(self):
         """선수 상세: 현재 팀·등번호, 시즌별 기록, 경기별 기록(상대·결과·선수 팀 기준 스코어·홈 여부)."""
+        from league.models import Player, PlayerHonor
+
+        p = Player.objects.get(code="1000525")
+        for kind, seq, years, title in [("AWARD", 0, "2025-2026", "라운드 MVP (5R)"), ("AWARD", 1, "2025-2026", "라운드 MVP (6R)"),
+                                        ("TRIPLE_CROWN", 0, "2026-2027", "역대 290호 우리카드 vs OK저축은행")]:
+            PlayerHonor.objects.create(player=p, kind=kind, seq=seq, season_years=years, title=title, text=title)
         r = self.client.get("/api/players/1000525").json()
+        # 수상·주요 기록: 종류별, 최근 것부터. 기록이 없는 선수는 None
+        self.assertEqual([a["title"] for a in r["honors"]["awards"]], ["라운드 MVP (6R)", "라운드 MVP (5R)"])
+        self.assertEqual(r["honors"]["triple_crowns"][0]["season"], "2026-2027")
+        self.assertEqual(r["honors"]["records"], [])
+        self.assertIsNone(self.client.get("/api/players/1000999").json()["honors"])
         self.assertEqual((r["team"]["name"], r["back_number"]), ("우리카드", 20))
         self.assertEqual(r["career"][0]["points"], 23)
         log = r["matches"][0]

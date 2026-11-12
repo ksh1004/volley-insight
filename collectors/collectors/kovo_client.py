@@ -21,7 +21,12 @@ RETRY_STATUS = {429, 500, 502, 503, 504}  # 다시 시도할 HTTP 상태 코드
 
 
 class KovoApiError(RuntimeError):
-    """KOVO API가 실패 응답을 주거나, 재시도를 다 써도 성공하지 못했을 때 던지는 예외."""
+    """KOVO API가 실패 응답을 주거나, 재시도를 다 써도 성공하지 못했을 때 던지는 예외.
+    status: 실패 응답의 HTTP 상태나 본문의 result.status(예: 404 = 그런 대상 없음). 네트워크 실패면 None."""
+
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
 
 
 class KovoClient:
@@ -61,11 +66,11 @@ class KovoClient:
                 self._backoff(attempt, path, f"HTTP {resp.status_code}")
                 continue
             if resp.status_code != 200:
-                raise KovoApiError(f"GET {path} returned HTTP {resp.status_code}")
+                raise KovoApiError(f"GET {path} returned HTTP {resp.status_code}", status=resp.status_code)
             body = resp.json()
             status = (body.get("result") or {}).get("status", 200) if isinstance(body, dict) else 200
             if status != 200:
-                raise KovoApiError(f"GET {path} returned result.status={status}: {body.get('result')}")
+                raise KovoApiError(f"GET {path} returned result.status={status}: {body.get('result')}", status=status)
             return body
         raise KovoApiError(f"GET {path} gave up after {self.max_retries} retries")
 
@@ -102,3 +107,8 @@ class KovoClient:
             "season": season_code, "gcode": gcode, "gnum": gnum, "hcode": hcode, "acode": acode,
             "rset": rset, "page": page, "size": size,
         })
+
+    def player_honor(self, player_code: str) -> dict:
+        """선수 한 명의 수상·주요 기록(COL-04): awards(수상 내역), tripleCrowns(트리플크라운), standardRecords
+        (기준 기록 달성, 예: 득점 3000개). 모두 "2025~2026 V-리그 ..." 형태의 문장 목록이다."""
+        return self.get(f"/players/{player_code}/honor")

@@ -47,20 +47,21 @@ const split = computed(() => (seen.value ? props.prob : 0.5))
 </template>
 
 <style scoped>
-.labels { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-variant-numeric: tabular-nums; }
+.labels { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-family: var(--font-outlier);
+          font-variant-numeric: tabular-nums; }
 .labels .home { color: var(--color-home); }
 .labels .away { color: var(--color-away); }
 .labels .fav { font-weight: 700; }
 .nm { margin-right: .3em; }
 .nm.after { margin: 0 0 0 .3em; }
-.cap { font-size: .72rem; color: var(--color-muted-foreground); }
-.bar { position: relative; height: 10px; border-radius: 999px; overflow: hidden; margin-top: 4px; background: var(--color-muted); }
+.cap { font-family: var(--font-body); font-size: .75rem; color: var(--color-muted-foreground); }
+.bar { position: relative; height: 10px; border-radius: 2px; overflow: hidden; margin-top: 4px; background: var(--color-muted); }
 .bar i { position: absolute; inset: 0; display: block; will-change: transform; }
 .bar .home { background: var(--color-home); transform-origin: left center; }
 .bar .away { background: var(--color-away); transform-origin: right center; }
 /* the 2px gap between the two sides travels with the split */
 .bar .cut { background: none; }
-.bar .cut::before { content: ''; position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; background: var(--color-card); }
+.bar .cut::before { content: ''; position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; background: var(--color-paper-2); }
 .seen .bar i { transition: transform var(--dur-chart) var(--ease-out); }
 .wp:not(.compact) .labels { font-size: 1.05rem; }
 .compact .labels { font-size: .78rem; }

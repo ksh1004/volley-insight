@@ -15,6 +15,7 @@ KOVO 공개 API와 뉴스 API에서 데이터를 받아 Kafka에 **원본 그대
 | `python -m collectors kafka-lag` | 없음 (Kafka 관리 API) | 없음, Elasticsearch `metrics-volley`에 컨슈머 랙 기록 | ADM-04 |
 | `python -m collectors live` | 진행 중인 경기마다 15초에 1건 (현재 세트 문자중계) | `kovo.live` (`시즌-경기번호`), 새 이벤트만 | COL-06 |
 | `python -m collectors replay 023-6 --speed 10` | 없음 (PostgreSQL `rally_event`를 다시 보냄) | `kovo.live`, `mode: REPLAY` | PIPE-11 |
+| `python -m collectors honors --player 1000525` | 선수마다 `/players/{코드}/honor` 1건 (KOVO에 없는 선수(404)는 건너뜀) | `kovo.player` (선수 코드) | COL-04 |
 
 옵션: `--league 201`(특정 리그만), `--gender 1|2`(남자부·여자부만), `--dry-run`(Kafka 없이 확인), `--save-sample`(첫 응답 저장).
 `games`에는 `--gnum 3`(특정 경기, 여러 번 가능), `--limit 5`(앞에서부터 N경기), `--only match|rally`도 있다.
@@ -80,6 +81,8 @@ Kafka에 연결할 수 없으면 KOVO에 요청하기 전에 멈춘다.
 - 경기 번호(`gnum`)는 한 시즌 안에서 리그·성별을 통틀어 겹치지 않는다(2025-26: 정규리그 1~252, 준PO 253~254, PO 255~258, 챔프전 261~270). 그래서 메시지 키는 `시즌-경기번호`다.
 - 경기 상세(`/stat/game-schedule/{gnum}`, 조건 `gcode`·`seasonCode`·`leagueCode`): `game`(일정과 같은 메타 + 세트별 소요 시간), `player`(출전 선수별 공격·오픈·시간차·이동·후위·속공·퀵오픈·서브·블로킹·디그·세트·리시브 세부 기록), `team`(두 팀 합계), `ranking`(팀별 부문 상위 선수).
 - 문자중계(`/stat/real-time`, 조건 `season`·`gcode`·`gnum`·`hcode`·`acode`·`rset`·`page`·`size`): 세트 하나씩 조회한다. `feed`가 이벤트 목록이고, 같은 응답에 그 세트의 선발 명단(`lineup`)과 경기 상세 기록도 들어 있다. 페이지 정보는 없어서, 받은 개수가 `size`보다 적으면 마지막 페이지로 본다. 한 세트는 약 250~300개라 `size=500`이면 요청 1번이다.
+- 선수 수상·주요 기록(`/players/{코드}/honor`, 2026-11-11 확인): `awards`(수상 내역), `tripleCrowns`, `standardRecords`(기준 기록 달성)가 "2025~2026 V-리그 라운드 MVP (5R)" 같은 문장 목록으로 온다. 정규리그·챔피언결정전 MVP, 신인선수상, 부문상, 라운드·월간 MVP가 모두 들어 있다(예: 김연경 43건, 레오 31건). 로그인 없이 조회된다.
+- 코칭스태프(`/teams/coaches`)는 구단 사이트의 요청 헤더(`X-Site-Origin`)가 없으면 404다. 구단 사이트인 것처럼 요청하지 않으므로 감독 정보는 수집하지 않는다.
 - 이벤트의 `rpage`는 묶음 순번이다. 랠리 하나, 선수 교체(`CI`/`CO`), 작전 타임(`CT`)이 각각 한 묶음이고, 세트 시작 `ST`는 0번, 종료 `ET`는 200번이다.
 
 - 한 세트는 보통 250~300개 이벤트이고, 15점 5세트는 120~190개다. 듀스가 길면 500개를 넘기도 한다(2025-26에서 8개 세트). 이때는 다음 페이지로 이어지고, 이어 붙이면 `ST`~`ET`가 끊김·중복 없이 이어진다.

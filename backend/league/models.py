@@ -104,3 +104,26 @@ class Player(PipelineModel):
 
     def __str__(self):
         return self.name
+
+
+class PlayerHonor(PipelineModel):
+    """선수의 수상·주요 기록 한 줄(COL-04). KOVO 선수 화면의 "수상 내역" 그대로이며 spark_jobs/curate_honors.py가
+    전체를 교체한다. 원문 예: "2025~2026 V-리그 라운드 MVP (5R)" → season_years "2025-2026", title "라운드 MVP (5R)"."""
+
+    class Kind(models.TextChoices):
+        AWARD = "AWARD", "수상"                  # 정규리그·챔피언결정전 MVP, 신인선수상, 부문상, 라운드·월간 MVP 등
+        TRIPLE_CROWN = "TRIPLE_CROWN", "트리플크라운"  # 한 경기 후위 공격·서브·블로킹 각 3개 이상
+        RECORD = "RECORD", "기록 달성"            # 통산 기준 기록 달성(예: 득점 3000개 달성 10호)
+
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name="honors")
+    kind = models.CharField(max_length=12, choices=Kind.choices)
+    seq = models.PositiveSmallIntegerField(help_text="order in KOVO's list (oldest first)")
+    season_years = models.CharField(max_length=9, blank=True,
+                                    help_text="e.g. 2025-2026, or 2014 for a one-year cup; blank if the line has none")
+    title = models.CharField(max_length=200, help_text="the line without its season prefix")
+    text = models.CharField(max_length=300, help_text="KOVO's original line")
+
+    class Meta:
+        db_table = "player_honor"
+        constraints = [models.UniqueConstraint(fields=["player", "kind", "seq"], name="uq_player_honor")]
+        ordering = ["player", "kind", "seq"]

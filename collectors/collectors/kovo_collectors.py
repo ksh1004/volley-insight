@@ -1,7 +1,8 @@
-"""KOVO 수집기: 시즌 목록, 경기 일정(COL-01, 02, 04), 경기별 박스스코어(COL-03), 문자중계(COL-10).
+"""KOVO 수집기: 시즌 목록, 경기 일정(COL-01, 02, 04), 경기별 박스스코어(COL-03), 문자중계(COL-10),
+선수별 수상·주요 기록(COL-04).
 
 메시지에는 API 응답 원본을 그대로 담는다(ELT). Kafka 메시지 키는 요구사항 2.5를 따른다.
-  시즌 목록 → `season-list-{gcode}`, 일정 → 시즌 코드, 경기 기록·문자중계 → `{시즌}-{경기번호}`
+  시즌 목록 → `season-list-{gcode}`, 일정 → 시즌 코드, 경기 기록·문자중계 → `{시즌}-{경기번호}`, 선수 → 선수 코드
 경기 번호(gnum)는 한 시즌 안에서 리그·성별을 통틀어 겹치지 않는다(2025-26 데이터로 확인).
 그래서 `{시즌}-{경기번호}`(예: "023-6")만으로 경기 하나가 정해진다.
 
@@ -11,6 +12,7 @@ import logging
 from dataclasses import dataclass
 
 from .base import BaseCollector
+from .kovo_client import KovoApiError
 
 log = logging.getLogger(__name__)
 
@@ -18,6 +20,7 @@ log = logging.getLogger(__name__)
 SCHEDULE_TOPIC = "kovo.schedule"
 MATCH_TOPIC = "kovo.match"
 RALLY_TOPIC = "kovo.rally"
+PLAYER_TOPIC = "kovo.player"
 GENDERS = {"1": "men", "2": "women"}  # KOVO API의 성별 코드
 # 실제 경기가 아닌 리그 코드: 200 시즌 통산, 801 올스타전, 901 시범경기, 903 연습경기(2014-15에서 확인)
 # 경기 리그 코드: 201 정규리그, 202 플레이오프, 203 챔피언결정전, 204 준플레이오프
@@ -212,3 +215,35 @@ class RallyCollector(BaseCollector):
 
     def key_of(self, endpoint, request_params, body):
         return f"{request_params['season']}-{request_params['gnum']}"
+
+
+class HonorCollector(BaseCollector):
+    """선수마다 수상·주요 기록(수상 내역, 트리플크라운, 기준 기록 달성)을 수집한다(COL-04). 선수 한 명 = 요청 1번.
+    KOVO에 없는 선수 코드(404)는 건너뛰고 skipped에 남긴다. 그 밖의 실패는 실행 전체를 실패시킨다."""
+
+    name = "kovo.honors"
+    topic = PLAYER_TOPIC
+
+    def __init__(self, client, publisher):
+        super().__init__(client, publisher)
+        self.skipped = []  # 최근 실행에서 KOVO가 "없음"이라고 답한 선수 코드
+
+    def describe(self, codes):
+        shown = ", ".join(codes[:5]) + (f" ... (+{len(codes) - 5})" if len(codes) > 5 else "")
+        return f"players={len(codes)} [{shown}]"
+
+    def collect(self, codes):
+        self.skipped = []
+        for code in codes:
+            try:
+                body = self.client.player_honor(code)
+            except KovoApiError as exc:
+                if exc.status != 404:
+                    raise
+                log.warning("player %s: KOVO has no honor page, skipped", code)
+                self.skipped.append(code)
+                continue
+            yield f"/players/{code}/honor", {"playerCode": code}, body
+
+    def key_of(self, endpoint, request_params, body):
+        return request_params["playerCode"]

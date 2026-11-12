@@ -19,6 +19,7 @@ create kovo.schedule 1
 create kovo.match 3
 create kovo.rally 3
 create kovo.live 3
+create kovo.player 1
 create news.article 1
 create live.metrics 3
 create ops.collection-log 1

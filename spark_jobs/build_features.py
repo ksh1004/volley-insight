@@ -1,7 +1,7 @@
 """경기 예측용 특징(feature)을 만든다(ANL-03): 경기마다 한 행, 그 경기 시작 전에 알 수 있던 정보만 쓴다.
 
   입력  HDFS /curated/kovo/{match, set_score, team_match_stat, player_match_stat}, /marts/kovo/match_elo
-        (경기 전 Elo), /marts/kovo/player_rating (선수 능력치 카드)
+        (경기 전 Elo와 선수 Elo 팀 전력), /marts/kovo/player_rating (선수 능력치 카드)
   출력  HDFS /features/kovo/match/  (Parquet. 끝난 경기에는 정답(label)이 있고, 예정 경기에는 없다)
 
 시점 규칙(point-in-time): 팀 값은 모두 '이 경기보다 엄격히 이전' 경기들로만 계산한다(시작 시각 기준 as-of 조인).
@@ -9,6 +9,7 @@
 
 특징 (따로 적지 않으면 홈 값 - 원정 값)
   elo_diff, elo_prob        경기 전 Elo 차이, Elo로 본 홈 승리 확률
+  pelo_diff, pelo_prob      경기 전 선수 Elo 팀 전력 차이, 그것으로 본 홈 승리 확률(build_marts.py의 player_elo)
   form_win, form_setdiff    최근 5경기: 승률, 평균 세트 득실
   form_pointdiff            최근 5경기: 세트당 점수 득실(승패보다 점수 차가 실력을 더 잘 보여 준다)
   pointdiff                 이번 시즌 지금까지: 세트당 점수 득실
@@ -43,7 +44,7 @@ BOX = ["attack_success", "attack_attempts", "receive_excellent", "receive_errors
 # (홈 세트, 원정 세트) → 정답 클래스 번호
 SET_SCORES = {(3, 0): 0, (3, 1): 1, (3, 2): 2, (2, 3): 3, (1, 3): 4, (0, 3): 5}
 # 출력 특징 컬럼(train_model.py의 FEATURE_COLS는 이 중 실제로 모델에 넣는 것들)
-FEATURE_COLS = ["elo_diff", "elo_prob", "form_win", "form_setdiff", "form_pointdiff", "pointdiff", "attack", "receive",
+FEATURE_COLS = ["elo_diff", "elo_prob", "pelo_diff", "pelo_prob", "form_win", "form_setdiff", "form_pointdiff", "pointdiff", "attack", "receive",
                 "block", "ace", "error", "rest", "h2h_rate", "h2h_n", "postseason", "men", "squad", "squad_known"]
 PRIOR_SEASONS = 2  # 선수 카드는 그 뒤 이만큼의 시즌까지 squad 특징에 쓰인다
 SQUAD = ["sq_w", "sq_known", "sq_sets"]  # squad / squad_known 계산에 쓰는 경기별 합계 컬럼
@@ -181,6 +182,8 @@ def main():
     feats = (base.join(elo, ["season_code", "game_no"], "left")
              .withColumn("elo_diff", F.coalesce(F.col("home_elo") - F.col("away_elo"), F.lit(0.0)))
              .withColumn("elo_prob", F.coalesce("elo_home_win_prob", F.lit(0.5)))
+             .withColumn("pelo_diff", F.coalesce(F.col("home_pelo") - F.col("away_pelo"), F.lit(0.0)))
+             .withColumn("pelo_prob", F.coalesce("pelo_home_win_prob", F.lit(0.5)))
              .join(as_of(matches, log), ["season_code", "game_no"], "left")
              .join(head_to_head(matches, finished), ["season_code", "game_no"], "left")
              .withColumn("home_win", F.when(F.col("set_score").isNotNull(), (F.col("set_score") < 3).cast("double"))))

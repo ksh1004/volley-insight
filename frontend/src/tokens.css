@@ -1,0 +1,63 @@
+/* Hallmark · shape: app screen · genre: editorial · theme: Sport (deal 1/3, seed live-sports-broadcast-scoreboard-05a1·7a998a35·2026-11-11·r0) · redesign: full · v2.0.0 */
+/* 디자인 토큰: Hallmark Sport 테마(경기 기록지 느낌)의 색·글꼴·간격.
+   모든 색과 글꼴은 여기서만 정하고, 컴포넌트는 var(--...)로만 쓴다.
+   아래쪽 "예전 이름" 묶음은 기존 컴포넌트가 쓰던 토큰 이름을 새 팔레트에 연결한 것이다(이름은 그대로, 값만 교체). */
+:root {
+  color-scheme: light;
+
+  /* 바탕(차가운 콘크리트 종이) 3단계, 잉크(짙은 남색) 2단계, 보조 글자 */
+  --color-paper: oklch(98% 0.005 250); --color-paper-2: oklch(95% 0.006 250); --color-paper-3: oklch(91.5% 0.007 250);
+  --color-ink: oklch(16% 0.080 260); --color-ink-2: oklch(22% 0.060 258); --color-ink-muted: oklch(48% 0.022 250);
+  /* 줄: 가는 줄(행 구분)과 굵은 줄(표·구역의 시작과 끝) */
+  --color-rule: oklch(78% 0.008 250); --color-rule-2: oklch(36% 0.060 255);
+  /* 형광 라임(volt): 유일한 강조색. 항상 "바탕 채움 + 잉크 글자"로만 쓰고 글자색으로는 쓰지 않는다 */
+  --color-volt: oklch(88% 0.200 120); --color-volt-ink: oklch(16% 0.080 260); --color-volt-deep: oklch(58% 0.145 125);
+  --color-focus: oklch(58% 0.145 125);
+  /* 원정팀 계열(홈팀 = 잉크와 밝기로 구분되는 중간 회청색) */
+  --color-away-tone: oklch(55% 0.045 250);
+  --color-error: oklch(52% 0.19 27); --color-error-soft: oklch(95% 0.03 27); --color-success: oklch(48% 0.13 150);
+
+  /* 글꼴: 표제는 좁고 굵은 Saira Condensed(숫자·영문) + 검은고딕(한글), 본문은 Pretendard, 시각·기록 숫자는 JetBrains Mono */
+  --font-display: "Saira Condensed", "Black Han Sans", "Pretendard Variable", sans-serif;
+  --font-body: "Pretendard Variable", Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-outlier: "JetBrains Mono", "Pretendard Variable", ui-monospace, monospace;
+  --tracking-display: -0.015em; --display-weight: 800;
+
+  /* 글자 크기 단계(고정 비율 1.2), 간격(4px 배수) */
+  --text-xs: 0.75rem; --text-sm: 0.875rem; --text-md: 1rem; --text-lg: 1.2rem; --text-xl: 1.44rem; --text-2xl: 1.728rem; --text-3xl: 2.074rem;
+  --text-display-s: 1.44rem; --text-display: 1.728rem; --text-section: 1.44rem; --text-title: 1rem; --text-lead: 1rem;
+  --space-3xs: 2px; --space-2xs: 4px; --space-xs: 8px; --space-sm: 12px; --space-md: 16px; --space-lg: 24px; --space-xl: 40px; --space-2xl: 64px; --space-3xl: 96px;
+  --container: 1200px; --gutter: 24px; --gap-columns: 32px;
+
+  --radius-card: 4px; --radius-pill: 4px; --rule-hair: 1px; --rule-bar: 2px;
+  --shadow-card: none;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); --ease-in: cubic-bezier(0.7, 0, 0.84, 0); --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-micro: 120ms; --dur-short: 220ms; --dur-long: 420ms;
+  --z-base: 1; --z-raised: 10; --z-dropdown: 100; --z-sticky: 200; --z-sticky-nav: 300; --z-modal: 400;
+
+  /* ---- 예전 이름(기존 컴포넌트용): 값은 모두 위 팔레트를 가리킨다 ---- */
+  --color-primary: var(--color-ink);            /* 링크·선택·홈팀 */
+  --color-primary-soft: var(--color-paper-2);
+  --color-accent: var(--color-away-tone);       /* 원정팀·보조 강조 글자 */
+  --color-accent-soft: var(--color-paper-3);
+  --color-background: var(--color-paper);
+  --color-card: var(--color-paper);
+  --color-foreground: var(--color-ink);
+  --color-heading: var(--color-ink);
+  --color-muted-foreground: var(--color-ink-muted);
+  --color-muted: var(--color-paper-2);          /* 옅은 바탕(글자색 아님) */
+  --color-border: var(--color-rule);
+  --color-border-soft: var(--color-paper-3);
+  --color-border-strong: var(--color-rule-2);
+  --color-good: var(--color-success);
+  --color-bad: var(--color-error);
+  --color-home: var(--color-ink);
+  --color-away: var(--color-away-tone);
+  --color-ring: var(--color-focus);
+  --color-highlight: var(--color-volt);         /* 검색어 표시 */
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
+  --radius: var(--radius-card);
+  --ease: var(--ease-out);
+  --font-sans: var(--font-body);
+}
+@media (max-width: 40rem) { :root { --gutter: 16px; --gap-columns: 16px; } }

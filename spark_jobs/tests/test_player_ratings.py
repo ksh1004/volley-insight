@@ -139,3 +139,35 @@ def test_career_card_averages_seasons_by_sets_and_pools_the_record():
     assert (card["best_season"], card["best_overall"]) == ("019", 80)  # 99점인 짧은 시즌은 규정 미달이라 제외
     assert card["qualified_seasons"] == 2 and not card["qualified"]  # 통산 순위에 들려면 규정 시즌 3개가 필요
     assert card["overall"] == pr.overall_score(card["abilities"])
+
+
+def test_team_relative_gives_back_shared_points_and_discounts_team_made_receives():
+    """OH 득점력: 동료가 리그보다 많이 득점하면 그만큼 더한다(공을 나눠 가지므로).
+    OH 리시브: 동료 리시버들이 리그보다 잘 받으면 그 차이의 절반을 뺀다(팀 덕을 본 몫)."""
+    def row(code, team, points, rec, rec_att, sets=100):
+        return {"season_code": "022", "gender": "M", "team_code": team, "player_code": code, "sets": sets,
+                "points": points, "receive_excellent": rec, "receive_attempts": rec_att}
+    rows = [row("a", "T", 300, 150, 300), row("mate", "T", 500, 200, 300),   # T: 동료가 많이 득점하고 잘 받는다
+            row("b", "U", 300, 150, 300), row("mate2", "U", 100, 100, 300)]  # U: 동료가 적게 득점하고 못 받는다
+    pr.add_team_relative(rows)
+    a, b = rows[0], rows[2]
+    # 리그(네 명) 세트당 득점 3.0, a의 동료 5.0 → +1 × (5 - 3) × 100세트 = +200
+    assert a["points_team_adj"] == 300 + 200 and b["points_team_adj"] == 300 + (1 - 3) * 100
+    # 리그 리시브 정확 50%, a의 동료 66.7% → 0.5 × 16.7%p × 300 = 25 만큼 뺀다
+    assert round(a["receive_excellent_team_adj"], 6) == round(150 - 0.5 * (200 / 300 - 0.5) * 300, 6)
+    assert a["receive_excellent_team_adj"] < 150 < b["receive_excellent_team_adj"]
+
+
+def test_cards_show_the_raw_stat_of_an_adjusted_ability():
+    """점수는 보정값으로 매기지만 카드의 근거 기록은 보정 전 실제 수치(세트당 득점, 리시브 정확)로 보인다."""
+    def oh(i):
+        return {"season_code": "022", "player_code": f"O{i}", "team_code": f"T{i % 4}", "gender": "M", "position": "OH",
+                "sets": 90, "qualified": True, "receive_excellent": 100 + i, "receive_attempts": 300, "points": 150 + 5 * i,
+                "block_success": 20 + i, "serve_net": i - 10, "serve_attempts": 200, "attack_net": 80 + i,
+                "attack_attempts": 300, "dig_success": 100 + i, "serves": None, "serve_hits": None}
+    rows = [oh(i) for i in range(10)]
+    pr.add_team_relative(rows)
+    card = pr.score_group(rows, rows, "OH")[id(rows[3])]
+    receive, scoring = card["abilities"][0], card["abilities"][1]
+    assert receive["score"] is not None and receive["stats"][0]["metric"] == "rec_exc"
+    assert scoring["stats"][0] == {"metric": "points_ps", "label": "세트당 득점", "unit": "n2", "value": 165 / 90}

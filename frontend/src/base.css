@@ -1,0 +1,23 @@
+/* 모든 화면에 깔리는 기본 규칙(브라우저 기본값 정리, 제목 글꼴, 포커스 표시, 움직임 줄이기). 색·글꼴 값은 tokens.css에서만 온다. */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { overflow-x: clip; } /* 가로 넘침은 잘라내되(hidden과 달리) 세로 스크롤·sticky는 그대로 둔다 */
+html { scrollbar-color: var(--color-rule) var(--color-paper); scroll-padding-top: var(--space-3xl); }
+body { margin: 0; background: var(--color-paper); color: var(--color-ink); font-family: var(--font-body); font-size: var(--text-md);
+       line-height: 1.55; -webkit-font-smoothing: antialiased; caret-color: var(--color-ink); }
+::selection { background: var(--color-volt); color: var(--color-volt-ink); }
+:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+/* 링크: 잉크색 글자 + 옅은 밑줄. 올리면 밑줄이 짙은 라임으로 굵어진다 */
+a { color: inherit; text-decoration-line: underline; text-decoration-thickness: 1px; text-decoration-color: var(--color-rule); text-underline-offset: 0.2em; }
+a:hover { text-decoration-color: var(--color-volt-deep); text-decoration-thickness: 2px; }
+/* 제목: 좁고 굵은 표제 글꼴. font-synthesis: none = 굵기가 하나뿐인 한글 표제 글꼴을 브라우저가 억지로 더 굵게 만들지 않게 */
+h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: var(--display-weight); font-synthesis: none;
+             letter-spacing: var(--tracking-display); line-height: 1.1; text-transform: uppercase; color: var(--color-ink);
+             overflow-wrap: break-word; min-width: 0; text-wrap: balance; }
+h1 { font-size: var(--text-3xl); } h2 { font-size: var(--text-section); } h3 { font-size: var(--text-title); line-height: 1.2; }
+p { text-wrap: pretty; }
+[hidden] { display: none !important; }
+button, input, select, textarea { font: inherit; }
+.num, .figure { font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}

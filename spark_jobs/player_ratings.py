@@ -19,7 +19,7 @@
 
 능력치 구성과 이유(2026-11-09 분석. "이적" = 팀을 옮긴 선수의 지난 시즌 값과의 상관. 그 수치가 팀이 아니라 선수를
 따라다니는지 보는 가장 엄격한 시험):
-  OH  리시브(리시브 정확률, 이적 0.55), 득점력(세트당 득점 0.51), 블로킹(세트당 블로킹 0.70),
+  OH  리시브(리시브 정확률, 이적 0.55, 팀 동료 대비 보정), 득점력(세트당 득점 0.51, 팀 동료 득점 보정), 블로킹(세트당 블로킹 0.70),
       서브(서브 압박 / 서브당 (에이스-범실) 0.55), 공격(효율: 0.08뿐이라 크게 당김), 수비(세트당 디그 0.38)
   OP  득점력(0.78), 공격(0.52), 블로킹(0.70), 서브(서브 압박 / 세트당 에이스 0.49), 수비(0.58)
   MB  블로킹(0.41), 견제(블로킹 시도당 유효 블로킹 0.53. 세트당으로는 0.18뿐), 속공(0.30),
@@ -37,6 +37,25 @@ r 0.713(모두 같은 가중치면 0.663). 능력치 하나씩 승률과의 상�
 서브 0.31, 리시브 0.24, 득점력 0.20, 디그 0.10, OH/OP 수비 -0.04, MB 견제 -0.02, 리베로 연결 -0.18.
 수비·견제·연결의 비중을 공격과 속공으로 옮기자(아래 값) r 0.738이 됐고, 역사의 앞뒤 절반 모두에서 좋아져
 (0.772 → 0.795, 0.663 → 0.686) 한 시기에만 맞춘 결과가 아님을 확인했다.
+
+2026-11-12 재검토(시험했지만 바꾸지 않은 것, 다시 시험하지 않도록 남김). 기준: 팀 승률 상관 0.739, 다음 시즌 상관
+0.652(이적 선수 0.513), 40세트 미만 시즌의 다음 시즌 상관 0.334:
+  - 득점력을 '세트당 공격 득점'(블로킹·서브 제외)으로: OH 득점력-블로킹 상관이 0.82 → 0.80으로 거의 그대로다. 같은 것을
+    두 번 센 게 아니라 많이 득점하는 OH가 실제로 블로킹도 많다(전위에 오래 서는 주전). 팀 승률 상관 0.737/0.735로 조금 나빠짐.
+  - 기준 집단을 30세트 이상만: 지난 시즌들에는 거의 영향이 없고(시즌 초 행은 앞 두 시즌과 함께 비교되어 이미 좁게 퍼진다:
+    2026-27 3경기째 표준편차 5.6, 최고 75), 지표는 그대로.
+  - 세트당 수치의 축소 무게 k 10 → 20 / 30: 적은 표본의 다음 시즌 상관이 0.334 → 0.326 / 0.319로 나빠짐.
+  남은 약점은 팀 맥락이다. 이적 선수의 다음 시즌 상관이 크게 떨어지는 능력치: 리베로 리시브(잔류 0.61 → 이적 0.17),
+  OH 공격 효율(0.51 → 0.14), OH 득점력(0.85 → 0.52), OH 수비(0.71 → 0.42), 세터 서브·토스(0.56·0.49 → 0.27).
+  OP는 거의 떨어지지 않는다(득점력 0.89 → 0.84).
+  → 팀 동료 보정(같은 날 적용, TEAM_ADJUST): 보정값 = 내 값 ± λ × (같은 시즌·같은 팀 동료들의 합친 값 - 리그 값).
+    OH 득점력은 동료가 리그보다 많이 득점한 만큼 더한다(공을 나눠 가지므로, λ 1.0): 이적 0.52 → 0.60, 잔류 0.85 → 0.86.
+    OH 리시브는 동료 리시버들이 리그보다 잘 받은 만큼의 절반을 뺀다(λ 0.5): 이적 0.44 → 0.51.
+    합쳐서 팀 승률 상관 0.739 → 0.742, 다음 시즌 0.652 → 0.653, 이적 전체 0.513 → 0.520.
+    리베로 리시브와 OH 공격 효율은 같은 보정으로 오히려 나빠져(이적 0.17 → 0.00, 0.14 → 0.01) 넣지 않았다:
+    동료와 함께 오르내리는 것이 팀 시스템 탓이 아니라는 뜻이다. λ를 더 키우면 득점력 이적 상관이 조금 더 오르지만
+    (1.5: 0.63, 2.0: 0.66) 이적 선수 81명에 맞추는 셈이라 뜻이 분명한 값(1.0 = 차이를 그대로 돌려줌)을 썼다.
+    카드의 근거 기록은 보정 전 실제 값(세트당 득점, 리시브 정확)을 보여 주고, 점수 계산에만 보정값을 쓴다.
 
 실행: docker compose exec airflow sh /opt/airflow/spark_jobs/submit.sh player_ratings.py   (kovo_daily에도 포함)
 """
@@ -79,14 +98,24 @@ METRICS = {
     "ace_ps": ("serve_aces", "sets", 10, "mean"),
     "dig_ps": ("dig_success", "sets", 10, "mean"),
     "set_att_ps": ("set_attempts", "sets", 10, "mean"),
+    # 팀 동료 보정한 수치(분자를 build_rows의 add_team_relative가 만든다). 카드에는 SHOW_AS의 원래 수치로 보인다
+    "points_ps_team": ("points_team_adj", "sets", 10, "mean"),
+    "rec_exc_team": ("receive_excellent_team_adj", "receive_attempts", 60, "mean"),
 }
+# 보정 수치 → (원래 분자, 새 분자, 분모, λ, 방향). 방향 +1: 동료가 리그보다 높으면 더함(공을 나눠 갖는 득점),
+# -1: 동료가 리그보다 높으면 뺌(팀 덕을 본 리시브)
+TEAM_ADJUST = {
+    "points_ps_team": ("points", "points_team_adj", "sets", 1.0, +1),
+    "rec_exc_team": ("receive_excellent", "receive_excellent_team_adj", "receive_attempts", 0.5, -1),
+}
+SHOW_AS = {"points_ps_team": "points_ps", "rec_exc_team": "rec_exc"}  # 카드에 보여 줄 원래 수치
 
 # 포지션 → [(키, 이름, 가중치 %, 대안들)]: 대안 하나는 능력치로 평균 낼 수치 목록이다.
 # 선수에게 값이 있는 첫 번째 대안을 쓴다(문자중계 버전이 먼저, 없으면 박스스코어 버전)
 SERVE_OH = [["serve_pressure"], ["serve_net"]]
 SERVE = [["serve_pressure"], ["ace_ps"]]
 ABILITIES = {
-    "OH": [("receive", "리시브", 25, [["rec_exc"]]), ("scoring", "득점력", 20, [["points_ps"]]),
+    "OH": [("receive", "리시브", 25, [["rec_exc_team"]]), ("scoring", "득점력", 20, [["points_ps_team"]]),
            ("block", "블로킹", 15, [["block_ps"]]), ("serve", "서브", 15, SERVE_OH),
            ("attack", "공격", 20, [["attack_eff"]]), ("defense", "수비", 5, [["dig_ps"]])],
     "OP": [("scoring", "득점력", 25, [["points_ps"]]), ("attack", "공격", 30, [["attack_eff"]]),
@@ -200,7 +229,8 @@ def score_group(group, targets, position):
         for key, label, weight, _ in ABILITIES[position]:
             z = ability_z[key].get(id(r))
             used = chosen[key].get(id(r), [])
-            stats = [{"metric": m, "label": SHOW[m][0], "unit": SHOW[m][1], "value": raw_value(r, m)} for m in used]
+            shown = [SHOW_AS.get(m, m) for m in used]  # 보정 수치는 원래 수치로 보여 준다
+            stats = [{"metric": m, "label": SHOW[m][0], "unit": SHOW[m][1], "value": raw_value(r, m)} for m in shown]
             note = next((NOTES[m] for m in used if m in NOTES), "")
             abilities.append({"key": key, "label": label, "weight": weight, "score": to_score(z),
                               "z": None if z is None else round(z, 3), "stats": stats, "note": note})
@@ -290,6 +320,25 @@ def score_all(rows):
             for r in targets:
                 results.append((r, scored[id(r)]))
     return results
+
+
+def add_team_relative(rows):
+    """TEAM_ADJUST의 보정 분자를 행마다 붙인다: 새 분자 = 원래 분자 + 방향 × λ × (동료 비율 - 리그 비율) × 분모.
+    동료 = 같은 시즌·같은 주 소속 팀의 다른 행(모든 포지션), 리그 = 같은 시즌·성별의 모든 행(합친 비율).
+    동료나 리그 값이 없으면 원래 분자 그대로."""
+    for num, out, den, lam, sign in TEAM_ADJUST.values():
+        team, league = defaultdict(lambda: [0.0, 0.0]), defaultdict(lambda: [0.0, 0.0])
+        for r in rows:
+            if r.get(den):
+                for acc in (team[(r["season_code"], r["team_code"])], league[(r["season_code"], r["gender"])]):
+                    acc[0] += r[num]
+                    acc[1] += r[den]
+        for r in rows:
+            r[out] = r.get(num)
+            t, g = team[(r["season_code"], r["team_code"])], league[(r["season_code"], r["gender"])]
+            mate_d = t[1] - (r.get(den) or 0)
+            if r.get(den) and mate_d > 0 and g[1]:
+                r[out] = r[num] + sign * lam * ((t[0] - r[num]) / mate_d - g[0] / g[1]) * r[den]
 
 
 def setter_added(set_rows, setters):
@@ -397,6 +446,7 @@ def build_rows(counts, serves, set_pairs):
         sv = serve_by.get((d["season_code"], d["player_code"]))
         d["serves"], d["serve_hits"] = sv if sv and sv[0] >= 1 else (None, None)
         rows.append(d)
+    add_team_relative(rows)
     setters = {(r["season_code"], r["player_code"]) for r in rows if r["position"] == "S"}
     added = setter_added([(s.season_code, s.setter, s.attacker, s.n, s.kills) for s in set_pairs], setters)
     for r in rows:

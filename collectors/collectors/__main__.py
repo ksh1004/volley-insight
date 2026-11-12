@@ -10,6 +10,7 @@
   python -m collectors kafka-lag [--every 30] [--once]   # 모든 컨슈머 그룹의 지연 → Elasticsearch
   python -m collectors live [--every 15]             # 오늘 경기의 새 문자중계 이벤트 → kovo.live (계속 실행)
   python -m collectors replay 023-5 [--speed 10] [--from-set 1]   # 끝난 경기를 실시간처럼 → kovo.live (PIPE-11)
+  python -m collectors honors --player 1000525 [--player ...] [--dry-run]   # 선수별 수상·주요 기록 → kovo.player
 
 --dry-run: Kafka로 보내지 않고 무엇을 보낼지 로그만 찍는다.
 Git Bash에서는 MSYS_NO_PATHCONV=1을 붙여야 `--path /stat/...`이 Windows 경로로 바뀌지 않는다.
@@ -22,7 +23,7 @@ import sys
 from pathlib import Path
 
 from .kovo_client import KovoClient
-from .kovo_collectors import (MatchCollector, RallyCollector, ScheduleCollector, SeasonCollector,
+from .kovo_collectors import (HonorCollector, MatchCollector, RallyCollector, ScheduleCollector, SeasonCollector,
                               finished_games)
 from .news import NewsCollector, NewsHttp
 from .publisher import DryRunPublisher, KafkaPublisher
@@ -148,6 +149,13 @@ def cmd_replay(args):
     print(f"kovo.live: replayed {n} rallies of {args.match}")
 
 
+def cmd_honors(args):
+    """honors 명령: 지정한 선수들의 수상·주요 기록을 발행한다(평소에는 DAG kovo_honors가 DB의 선수 목록으로 실행)."""
+    collector = HonorCollector(KovoClient(), make_publisher(args))
+    n = collector.run(codes=args.player)
+    print(f"kovo.player: published {n} message(s)" + (f", not on KOVO: {collector.skipped}" if collector.skipped else ""))
+
+
 def main(argv=None):
     """명령줄 인자를 읽어 해당 cmd_* 함수를 실행한다. 명령마다 하위 파서(subparser)를 하나씩 만든다."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -204,6 +212,11 @@ def main(argv=None):
     sp.add_argument("--speed", type=float, default=10.0, help="1 = real pace, 10 = ten times faster")
     sp.add_argument("--from-set", type=int, default=1)
     sp.set_defaults(func=cmd_replay)
+
+    sp = sub.add_parser("honors", help="publish players' awards, triple crowns and milestone records")
+    sp.add_argument("--player", required=True, action="append", help="KOVO player code (repeatable)")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(func=cmd_honors)
 
     args = p.parse_args(argv)
     args.func(args)

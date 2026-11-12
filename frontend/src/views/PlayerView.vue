@@ -9,6 +9,7 @@ import AsyncState from '@/components/AsyncState.vue'
 import FavoriteButton from '@/components/FavoriteButton.vue'
 import PercentileBars from '@/components/PercentileBars.vue'
 import PlayerForm from '@/components/PlayerForm.vue'
+import PlayerHonors from '@/components/PlayerHonors.vue'
 import PlayerRatingCard from '@/components/PlayerRatingCard.vue'
 import PlayerStyle from '@/components/PlayerStyle.vue'
 import RelatedArticles from '@/components/RelatedArticles.vue'
@@ -79,6 +80,11 @@ watch(season, (v) => { if (data.value && v !== data.value.season.code) load() })
         <h2>능력치 카드 <span class="muted small">정규리그 · 같은 성별·포지션 비교</span></h2>
         <PlayerRatingCard :ratings="data.ratings" :season="data.season.code" :gender="data.player.gender"
                           :prefer-career="route.query.card === 'career'" />
+      </section>
+
+      <section v-if="data.honors" class="card" aria-labelledby="honors-title">
+        <h2 id="honors-title">수상·주요 기록 <span class="muted small">KOVO 기록 기준</span></h2>
+        <PlayerHonors :honors="data.honors" />
       </section>
 
       <div :class="{ 'grid-2': data.profile && data.form }">
