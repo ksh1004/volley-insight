@@ -94,7 +94,7 @@ const rows = computed(() => {
     <template v-if="data">
       <div class="title-row">
         <div>
-          <h1>{{ data.team.name }}</h1>
+          <h1 :data-team="data.team.code">{{ data.team.name }}</h1>
           <p class="muted small">{{ data.team.full_name }} · {{ GENDERS[data.team.gender] }}
             <span v-if="data.team.home_arena"> · 홈 {{ data.team.home_arena }}</span></p>
         </div>

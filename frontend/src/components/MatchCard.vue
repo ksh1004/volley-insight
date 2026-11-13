@@ -33,7 +33,7 @@ const label = computed(() => {
       <span class="tags"><span>{{ GENDERS[m.gender] }}</span><span :class="{ stage: m.league_code !== '201' }">{{ stage }}</span></span>
     </div>
     <div class="teams">
-      <span class="team home" :class="{ won: homeWon, lost: awayWon }">{{ m.home.name }}</span>
+      <span class="team home" :class="{ won: homeWon, lost: awayWon }" :data-team="m.home.code">{{ m.home.name }}</span>
       <span v-if="done" class="score">
         <b :class="{ won: homeWon }">{{ m.home_sets }}</b><i>:</i><b :class="{ won: awayWon }">{{ m.away_sets }}</b>
       </span>
@@ -42,7 +42,7 @@ const label = computed(() => {
         <span class="sets"><b>{{ m.home_sets }}</b><i>:</i><b>{{ m.away_sets }}</b></span>
       </span>
       <span v-else class="score pending">{{ STATUS[m.status] }}</span>
-      <span class="team away" :class="{ won: awayWon, lost: homeWon }">{{ m.away.name }}</span>
+      <span class="team away" :class="{ won: awayWon, lost: homeWon }" :data-team="m.away.code">{{ m.away.name }}</span>
     </div>
     <div class="foot small">
       <template v-if="done && m.sets.length">

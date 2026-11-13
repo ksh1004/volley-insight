@@ -129,6 +129,23 @@ h2 { margin: 0 0 var(--space-sm); }
   .nav-link { padding: 0 var(--space-xs); }
 }
 
+/* 팀 이름은 팀 컬러로: 팀 화면으로 가는 링크는 주소의 팀 코드로, 링크가 아닌 이름은 data-team 표시로 칠한다.
+   짙은 바탕(진행 중 경기 타일)과 홈/원정 색이 그래프와 짝을 이루는 곳(실시간 화면)에는 붙이지 않는다 */
+a[href^="/teams/1001"], [data-team="1001"] { color: var(--team-1001); }
+a[href^="/teams/1002"], [data-team="1002"] { color: var(--team-1002); }
+a[href^="/teams/1004"], [data-team="1004"] { color: var(--team-1004); }
+a[href^="/teams/1005"], [data-team="1005"] { color: var(--team-1005); }
+a[href^="/teams/1006"], [data-team="1006"] { color: var(--team-1006); }
+a[href^="/teams/1008"], [data-team="1008"] { color: var(--team-1008); }
+a[href^="/teams/1009"], [data-team="1009"] { color: var(--team-1009); }
+a[href^="/teams/2001"], [data-team="2001"] { color: var(--team-2001); }
+a[href^="/teams/2002"], [data-team="2002"] { color: var(--team-2002); }
+a[href^="/teams/2003"], [data-team="2003"] { color: var(--team-2003); }
+a[href^="/teams/2004"], [data-team="2004"] { color: var(--team-2004); }
+a[href^="/teams/2005"], [data-team="2005"] { color: var(--team-2005); }
+a[href^="/teams/2006"], [data-team="2006"] { color: var(--team-2006); }
+a[href^="/teams/2008"], [data-team="2008"] { color: var(--team-2008); }
+
 /* ---- 공용 구성 요소 ---- */
 /* 카드: 상자가 아니라 "굵은 줄 아래의 구역". 표·글 목록처럼 내용이 한 덩어리일 때 쓴다 */
 .card { border-top: var(--rule-bar) solid var(--color-rule-2); padding: var(--space-md) 0 0; margin-bottom: var(--space-xl); }

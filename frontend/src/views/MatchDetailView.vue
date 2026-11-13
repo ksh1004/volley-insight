@@ -249,8 +249,7 @@ watch(setNo, loadRallies)
 .live-link { text-align: center; margin: 8px 0 0; font-weight: 700; }
 .no { margin-left: 4px; }
 .board { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px; margin: 16px 0; }
-.board-team { font-size: 1.35rem; font-weight: 800; color: var(--color-foreground); display: flex; flex-direction: column; align-items: center; }
-.board-team.won { color: var(--color-primary); }
+.board-team { font-size: 1.35rem; font-weight: 800; display: flex; flex-direction: column; align-items: center; } /* 글자색 = 팀 컬러(App.vue) */
 .side { font-weight: 500; }
 .board-score { font-size: 2.4rem; font-weight: 800; display: flex; gap: 10px; color: var(--color-muted-foreground); font-variant-numeric: tabular-nums; }
 .board-score b.won { color: var(--color-primary); }
