@@ -325,6 +325,8 @@ Windows에서 `localhost`로 재면 IPv6 연결 실패를 기다리는 시간(�
 
 ## 2. ERD
 
+> **현재 구현 기준 ERD는 [erd.md](erd.md)(2026-11-16)에 있다.** 이 장은 2026-11-02 초안이라 실제 DB와 다르다(만들지 않은 테이블 3개, 새로 생긴 테이블 12개). 차이는 erd.md 5장에 정리했다.
+
 서빙 DB(PostgreSQL `service`) 기준이다. 모든 테이블은 대리 키 `id`(bigint)를 쓰고, KOVO 원본 코드는 고유 제약으로 둔다. 시각 컬럼은 `timestamptz`, 저장 시각은 `created_at`·`updated_at`을 공통으로 둔다(그림에서는 생략).
 
 ### 2.1 경기·기록 도메인
